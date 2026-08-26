@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Football Spin</title>
+<title>Safari Spin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
 <style>
@@ -17,83 +17,92 @@
     font-family:Barlow,system-ui,sans-serif;color:var(--ink);
     background:
       radial-gradient(120% 70% at 50% 0%, #a3181c 0%, var(--cab-red) 45%, var(--cab-deep) 100%);
-    min-height:100dvh;padding-bottom:120px;
+    min-height:100dvh;padding-bottom:calc(70px + env(safe-area-inset-bottom));
   }
   header{
     display:flex;justify-content:space-between;align-items:center;
-    padding:14px 16px 6px;
+    padding:8px 12px 2px;
   }
-  h1{font-family:'Russo One';font-size:20px;letter-spacing:1px;color:var(--gold);
+  h1{font-family:'Russo One';font-size:clamp(14px,4.2vw,18px);letter-spacing:1px;color:var(--gold);
      text-shadow:0 2px 0 #5c3a00}
   .age{font-size:11px;border:1.5px solid var(--gold);border-radius:50%;
-       width:30px;height:30px;display:grid;place-items:center;color:var(--gold);font-weight:600}
+       width:24px;height:24px;display:grid;place-items:center;color:var(--gold);font-weight:600}
 
   /* LED scoreboard */
-  .boards{display:flex;gap:10px;padding:6px 16px}
+  .boards{display:flex;gap:8px;padding:4px 12px}
   .board{flex:1;background:var(--panel);border:2px solid var(--gold);border-radius:10px;
-         padding:6px 10px;box-shadow:inset 0 0 18px #000}
+         padding:4px 8px;box-shadow:inset 0 0 18px #000}
   .board small{display:block;font-family:'Russo One';font-size:10px;color:#ff7ab5;letter-spacing:2px}
-  .board b{font-variant-numeric:tabular-nums;font-family:'Russo One';font-size:22px;color:var(--led);
+  .board b{font-variant-numeric:tabular-nums;font-family:'Russo One';font-size:clamp(15px,4.6vw,19px);color:var(--led);
            text-shadow:0 0 8px rgba(255,59,48,.8)}
 
   /* wheel */
-  .wheel-wrap{position:relative;width:min(88vw,380px);aspect-ratio:1;margin:14px auto}
+  .wheel-wrap{position:relative;width:min(74vw,min(300px,34vh));aspect-ratio:1;margin:8px auto}
   .hub{position:absolute;inset:15%;border-radius:50%;
        background:radial-gradient(circle at 35% 30%, #2a1414, #0d0505 70%);
        border:3px solid var(--gold);display:grid;place-items:center;box-shadow:0 0 40px rgba(0,0,0,.6)}
-  .hub .num{font-family:'Russo One';font-size:44px;color:var(--led);text-shadow:0 0 12px rgba(255,59,48,.9)}
-  .hub .msg{font-size:12px;color:#e8b7b7;margin-top:2px;min-height:15px;text-align:center;padding:0 14px}
+  .hub .num{font-family:'Russo One';font-size:clamp(24px,8vw,36px);color:var(--led);text-shadow:0 0 12px rgba(255,59,48,.9)}
+  .hub .msg{font-size:clamp(9px,2.7vw,11px);color:#e8b7b7;margin-top:2px;min-height:15px;text-align:center;padding:0 14px}
   .slot{position:absolute;width:13.5%;aspect-ratio:1;border-radius:50%;
         display:grid;place-items:center;font-family:'Russo One';font-size:10px;
         border:2px solid #cfe6ff;color:#fff;transform:translate(-50%,-50%);
-        box-shadow:0 2px 4px rgba(0,0,0,.5);transition:box-shadow .1s, filter .1s}
+        box-shadow:0 2px 4px rgba(0,0,0,.5);transition:box-shadow .1s, filter .1s;overflow:hidden}
   .slot.lit{box-shadow:0 0 0 4px var(--lamp), 0 0 22px 6px var(--lamp);filter:brightness(1.25)}
-  .slot em{font-style:normal;font-size:8px;display:block;text-align:center;line-height:1}
+  .slot.lit-gold{box-shadow:0 0 0 4px #ffd54a, 0 0 26px 8px #ffb300;filter:brightness(1.4)}
+  .slot.lit-purple{box-shadow:0 0 0 4px #d18aff, 0 0 26px 8px #8e24aa;filter:brightness(1.35)}
+  .slot.lit-green{box-shadow:0 0 0 4px #7bffa8, 0 0 24px 7px #14a44d;filter:brightness(1.3)}
+  .slot em{font-style:normal;font-size:7px;display:block;text-align:center;line-height:1}
 
   /* bet panel */
-  .bets{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 16px;margin-top:6px}
-  .bet{background:var(--panel);border:2px solid #5a4a1c;border-radius:10px;padding:8px 4px 6px;
+  .bets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:0 12px;margin-top:4px}
+  .bet{background:var(--panel);border:2px solid #5a4a1c;border-radius:9px;padding:5px 2px 4px;
        text-align:center;position:relative}
   .bet.active{border-color:var(--gold);box-shadow:0 0 12px rgba(243,196,64,.45)}
-  .bet .dot{width:26px;height:26px;border-radius:50%;margin:0 auto 4px;display:grid;place-items:center;
-            font-family:'Russo One';font-size:10px;color:#fff;border:2px solid #fff3}
-  .bet small{display:block;font-size:10px;color:#ffb0d5}
-  .bet b{font-family:'Russo One';font-size:14px;color:var(--led)}
-  .bet .amt{font-size:11px;color:var(--gold);min-height:14px}
+  .bet .dot{width:clamp(22px,7vw,28px);height:clamp(22px,7vw,28px);border-radius:50%;margin:0 auto 4px;display:grid;place-items:center;
+            font-family:'Russo One';font-size:7px;color:#fff;border:2px solid #fff3;overflow:hidden}
+  .bet small{display:block;font-size:9px;color:#ffb0d5}
+  .bet b{font-family:'Russo One';font-size:clamp(11px,3.3vw,13px);color:var(--led)}
+  .bet .amt{font-size:10px;color:var(--gold);min-height:14px}
 
   /* controls */
   .bar{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(#241010,#120707);
-       border-top:2px solid var(--gold);padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+       border-top:2px solid var(--gold);padding:7px 12px calc(7px + env(safe-area-inset-bottom));
        display:flex;gap:8px}
-  button{font-family:'Russo One';border:none;border-radius:12px;padding:12px 0;font-size:14px;
+  button{font-family:'Russo One';border:none;border-radius:11px;padding:10px 0;font-size:13px;
          color:#241300;background:linear-gradient(#ffe08a,var(--gold));flex:1;
          box-shadow:0 3px 0 #8a6a12;cursor:pointer}
   button:active{transform:translateY(2px);box-shadow:0 1px 0 #8a6a12}
   button.red{background:linear-gradient(#ff6b5e,#d92c20);color:#fff;box-shadow:0 3px 0 #7a140d}
   button.ghost{background:transparent;color:var(--gold);border:2px solid var(--gold);box-shadow:none}
   button:disabled{opacity:.5}
-  .chips{display:flex;gap:8px;justify-content:center;margin:10px 16px 0}
-  .chip{flex:0 0 auto;width:56px;padding:8px 0;border-radius:999px;font-size:13px}
+  .chips{display:flex;gap:6px;justify-content:center;margin:6px 12px 0}
+  .chip{flex:0 0 auto;width:52px;padding:6px 0;border-radius:999px;font-size:13px}
   .chip.sel{outline:3px solid #fff}
 
   /* sheets */
   .sheet{position:fixed;inset:0;background:rgba(10,3,3,.72);display:none;place-items:end center;z-index:9}
   .sheet.open{display:grid}
   .card{background:#1d0e0e;border:2px solid var(--gold);border-radius:18px 18px 0 0;width:100%;
-        max-width:480px;padding:20px 18px calc(20px + env(safe-area-inset-bottom))}
+        max-width:480px;padding:16px 16px calc(16px + env(safe-area-inset-bottom));max-height:92dvh;overflow-y:auto}
   .card h2{font-family:'Russo One';color:var(--gold);font-size:16px;margin-bottom:12px}
-  .card label{font-size:12px;color:#e6c9c9;display:block;margin:10px 0 4px}
-  .card input,.card select{width:100%;padding:12px;border-radius:10px;border:1.5px solid #5a4a1c;
+  .card label{font-size:11px;color:#e6c9c9;display:block;margin:7px 0 3px}
+  .card input,.card select{width:100%;padding:10px;border-radius:10px;border:1.5px solid #5a4a1c;
         background:#0e0606;color:var(--ink);font-size:15px}
   .card .err{color:#ff8a80;font-size:13px;min-height:16px;margin-top:8px}
   .rg{font-size:11px;color:#caa;text-align:center;margin-top:14px;line-height:1.5}
   .rg a{color:var(--gold)}
+  .soundbtn{position:absolute;right:16px;top:52px;background:none;border:none;box-shadow:none;
+            color:var(--gold);font-size:18px;width:auto;flex:0;padding:0;cursor:pointer}
 </style>
 </head>
 <body>
 <header>
-  <h1>FOOTBALL SPIN</h1>
-  <span><span id="modeBadge" style="display:none;font-family:'Russo One';font-size:10px;background:#9e6a03;color:#fff;padding:3px 10px;border-radius:999px;margin-right:8px;vertical-align:middle">DEMO</span><span class="age" style="display:inline-grid">18+</span></span>
+  <h1>SAFARI SPIN</h1>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span id="soundToggle" style="cursor:pointer;font-size:18px;color:var(--gold)">&#128266;</span>
+    <span id="modeBadge" style="display:none;font-family:'Russo One';font-size:10px;background:#9e6a03;color:#fff;padding:3px 10px;border-radius:999px">DEMO</span>
+    <div class="age">18+</div>
+  </div>
 </header>
 
 <div class="boards">
@@ -101,13 +110,13 @@
   <div class="board"><small>CREDIT KSh</small><b id="balance">0.00</b></div>
 </div>
 
-<div style="margin:8px 16px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
-     border:2px solid var(--gold);border-radius:10px;text-align:center;padding:5px">
+<div style="margin:5px 12px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
+     border:2px solid var(--gold);border-radius:9px;text-align:center;padding:3px">
   <span style="font-family:'Russo One';font-size:11px;color:#ffd98a;letter-spacing:2px">JACKPOT</span>
-  <div style="font-family:'Russo One';font-size:24px;color:var(--gold);text-shadow:0 0 10px rgba(243,196,64,.7)" id="jackpotPool">KSh —</div>
+  <div style="font-family:'Russo One';font-size:clamp(16px,5vw,21px);color:var(--gold);text-shadow:0 0 10px rgba(243,196,64,.7)" id="jackpotPool">KSh —</div>
 </div>
 
-<div id="winnersBar" style="display:none;margin:6px 16px 0;overflow:hidden;white-space:nowrap;
+<div id="winnersBar" style="display:none;margin:4px 12px 0;overflow:hidden;white-space:nowrap;
      background:#1a0b0b;border:1px solid #5a4a1c;border-radius:8px;padding:6px 0">
   <div id="winnersTrack" style="display:inline-block;padding-left:100%;animation:tick 30s linear infinite;
        font-size:12px;color:#ffd98a"></div>
@@ -149,6 +158,29 @@
   If gambling stops being fun, free help is available.</p>
 </div></div>
 
+<!-- BONUS: pick 3 of 9 -->
+<div class="sheet" id="bonusSheet"><div class="card" style="border-color:#7a1fa0">
+  <h2 style="color:#e6a8ff">&#128142; DIAMOND BONUS — pick 3</h2>
+  <p style="font-size:12px;color:#e6c9c9;margin-bottom:10px" id="bonusMsg">Each tile hides a multiplier of your stake. Choose three.</p>
+  <div id="bonusGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"></div>
+  <div style="font-family:'Russo One';font-size:18px;color:var(--gold);text-align:center;margin-top:12px;min-height:24px" id="bonusTotal"></div>
+  <button id="bonusDone" style="display:none;width:100%;margin-top:10px">Collect</button>
+</div></div>
+
+<!-- PesaLink sheet -->
+<div class="sheet" id="plSheet"><div class="card">
+  <h2>PesaLink bank transfer</h2>
+  <p style="font-size:12px;color:#e6c9c9">For amounts above KSh 70,000. Processed within one business day.</p>
+  <label>Amount (KSh)</label><input id="plAmount" type="number" min="70001" step="1000">
+  <label>Bank name</label><input id="plBank" placeholder="e.g. Equity Bank">
+  <label>Account number</label><input id="plAcct" inputmode="numeric">
+  <div class="err" id="plErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="plGo">Request transfer</button>
+    <button class="ghost" id="plCancel">Cancel</button>
+  </div>
+</div></div>
+
 <!-- deposit sheet -->
 <div class="sheet" id="depositSheet"><div class="card">
   <h2>Deposit via M-Pesa</h2>
@@ -158,46 +190,164 @@
   <p class="rg" id="paybillNote" style="text-align:left;margin-top:10px"></p>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button id="depGo">Send M-Pesa prompt</button>
-    <button class="ghost" onclick="close_('depositSheet')">Cancel</button>
+    <button class="ghost" id="depCancel">Cancel</button>
   </div>
 </div></div>
 
 <!-- withdraw sheet -->
 <div class="sheet" id="withdrawSheet"><div class="card">
   <h2>Withdraw to M-Pesa</h2>
-  <label>Amount (KSh, minimum 100)</label><input id="wdAmount" type="number" min="100" step="50">
+  <label>Amount (KSh 100 – 70,000 via M-Pesa)</label><input id="wdAmount" type="number" min="100" step="50">
+  <p class="rg" style="text-align:left;margin-top:6px">Max 3 withdrawals per day. Above KSh 70,000 use PesaLink bank transfer.</p>
   <p class="rg" style="text-align:left" id="wdDest"></p>
   <div class="err" id="wdErr"></div>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button id="wdGo">Send to M-Pesa</button>
-    <button class="ghost" onclick="close_('withdrawSheet')">Cancel</button>
+    <button class="ghost" id="wdCancel">Cancel</button>
   </div>
 </div></div>
 
 <script>
 /* ---- game data (must match server WHEEL order) ---- */
-const TEAMS = {
-  leicester:{n:"LEI",c:"#1c4fa0",odds:"50–100"}, manu:{n:"MUN",c:"#c11a1a",odds:"20–40"},
-  chelsea:{n:"CHE",c:"#1b458f",odds:"20–40"},   arsenal:{n:"ARS",c:"#d0101c",odds:"20–40"},
-  real:{n:"RMA",c:"#8d7bd0",odds:"10–20"},      liverpool:{n:"LIV",c:"#b02020",odds:"10–20"},
-  stoke:{n:"STK",c:"#c43a4a",odds:"10–20"},     norwich:{n:"NOR",c:"#2fae5e",odds:"5"},
-  allprize:{n:"ALL",c:"#7a1fa0"},               diamond:{n:"◆",c:"#3a3ad0"},
+const ANIMALS = {
+  star:{n:"\u2605",c:"#f3c440",odds:"50\u2013100",star:1},
+  elephant:{n:"ELEPHANT",c:"#78909c",odds:"30",big:1},
+  rhino:{n:"RHINO",c:"#546e7a",odds:"25",big:1},
+  lion:{n:"LION",c:"#c8862a",odds:"20",big:1},
+  buffalo:{n:"BUFFALO",c:"#6d4c41",odds:"15",big:1},
+  leopard:{n:"LEOPARD",c:"#e08a1e",odds:"12",big:1},
+  giraffe:{n:"GIRAFFE",c:"#d4a017",odds:"8"},
+  zebra:{n:"ZEBRA",c:"#37474f",odds:"5"},
+  allprize:{n:"ALL",c:"#7a1fa0"}, diamond:{n:"\u25C6",c:"#3a3ad0"},
 };
-const WHEEL = ["leicester","leicester","allprize","norwich","liverpool","arsenal","arsenal","diamond",
-  "norwich","stoke","stoke","real","manu","manu","norwich","liverpool","liverpool","chelsea",
-  "chelsea","diamond","norwich","real","real","stoke"];
-const BETTABLE = ["leicester","manu","chelsea","arsenal","real","liverpool","stoke","norwich"];
+const WHEEL = ["star","star","allprize","zebra","lion","leopard","leopard","diamond",
+  "zebra","buffalo","buffalo","giraffe","elephant","elephant","giraffe","lion","lion","rhino",
+  "rhino","diamond","zebra","giraffe","buffalo","leopard"];
+const BETTABLE = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
 const CHIP_VALUES = [20,50,100,200];
 
 let token = localStorage.getItem("fs_token") || null;
 let balance = 0, bets = {}, chip = 20, spinning = false;
+let lastJackpotAt = 0, isLive = true, myPhone = "";
 
 const $ = id => document.getElementById(id);
 const money = k => (k/100).toLocaleString("en-KE",{minimumFractionDigits:2});
 const open_ = id => $(id).classList.add("open");
 const close_ = id => $(id).classList.remove("open");
-window.close_ = close_;
 
+/* ---------- AUDIO: synthesised SFX + procedural music (no audio files) ---------- */
+let audioCtx = null, soundOn = localStorage.getItem("fs_sound") !== "off";
+function ac(){
+  if(!audioCtx){
+    try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ return null; }
+  }
+  if(audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+function tone(freq, dur, type, vol, delay){
+  if(!soundOn) return;
+  const c = ac(); if(!c) return;
+  const t0 = c.currentTime + (delay || 0);
+  const osc = c.createOscillator(), g = c.createGain();
+  osc.type = type || "sine";
+  osc.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(vol || 0.15, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(c.destination);
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
+const sfx = {
+  tick(){ tone(880, 0.04, "square", 0.05); },
+  chip(){ tone(660, 0.07, "triangle", 0.12); },
+  spin(){ tone(220, 0.15, "sawtooth", 0.10); },
+  lose(){ tone(200, 0.25, "sine", 0.10); tone(150, 0.3, "sine", 0.09, 0.12); },
+  win(){ [523,659,784,1047].forEach((f,i)=>tone(f, 0.22, "triangle", 0.16, i*0.09)); },
+  bigWin(){ [523,659,784,1047,1319].forEach((f,i)=>tone(f, 0.3, "triangle", 0.18, i*0.08));
+            [392,523].forEach((f,i)=>tone(f, 0.5, "sine", 0.12, 0.45+i*0.12)); },
+  jackpot(){ [523,587,659,698,784,880,988,1047].forEach((f,i)=>tone(f,0.35,"square",0.16,i*0.1));
+             [1047,1319,1568].forEach((f,i)=>tone(f,0.8,"triangle",0.2,0.85+i*0.05)); },
+  error(){ tone(180, 0.18, "square", 0.10); },
+};
+
+/* Procedural music: a step sequencer that switches "mood" with game state.
+ * Each mood is a note pattern + timbre; music stops exactly when the wheel
+ * stops, and swaps to the bonus/jackpot theme while those games run. */
+const MOODS = {
+  idle:    { notes:[220,277,330,277], step:0.42, type:"triangle", vol:0.045, bass:110 },
+  spin:    { notes:[330,392,440,392,330,294], step:0.16, type:"sawtooth", vol:0.055, bass:110 },
+  bonus:   { notes:[311,370,415,466,415,370], step:0.20, type:"square", vol:0.06, bass:155 },
+  jackpot: { notes:[523,659,784,1047,784,659], step:0.15, type:"triangle", vol:0.075, bass:131 },
+};
+let music = { mood:null, timer:null, i:0 };
+function setMusic(mood){
+  if(music.mood === mood) return;
+  music.mood = mood; music.i = 0;
+  clearInterval(music.timer); music.timer = null;
+  if(!mood || !soundOn) return;
+  const m = MOODS[mood]; if(!m) return;
+  const play = () => {
+    if(!soundOn){ return; }
+    const n = m.notes[music.i % m.notes.length];
+    tone(n, m.step*1.6, m.type, m.vol);
+    if(music.i % 4 === 0) tone(m.bass, m.step*2.4, "sine", m.vol*0.9);
+    music.i++;
+  };
+  play();
+  music.timer = setInterval(play, m.step*1000);
+}
+function stopMusic(){ setMusic(null); }
+
+function updateSoundIcon(){ $("soundToggle").innerHTML = soundOn ? "&#128266;" : "&#128263;"; }
+$("soundToggle").onclick = () => {
+  soundOn = !soundOn;
+  localStorage.setItem("fs_sound", soundOn ? "on" : "off");
+  updateSoundIcon();
+  if(!soundOn) stopMusic(); else sfx.chip();
+};
+updateSoundIcon();
+
+/* ---------- LIGHT ENGINE: a different pattern per scenario ---------- */
+let lightTimer = null;
+function stopLights(){
+  clearInterval(lightTimer); lightTimer = null;
+  slots.forEach(s=>{ s.classList.remove("lit","lit-gold","lit-purple","lit-green"); });
+}
+function lightsAll(cls, period){
+  stopLights();
+  let on = false;
+  lightTimer = setInterval(()=>{
+    on = !on;
+    slots.forEach(s=> on ? s.classList.add(cls) : s.classList.remove(cls));
+  }, period);
+}
+function lightsRainbow(){                       // JACKPOT: gold wave around the wheel
+  stopLights();
+  let p = 0;
+  lightTimer = setInterval(()=>{
+    slots.forEach((s,i)=>{
+      s.classList.toggle("lit-gold", (i + p) % 3 === 0);
+      s.classList.toggle("lit-purple", (i + p) % 3 === 1);
+    });
+    p++;
+  }, 110);
+}
+function lightsPurplePulse(){                   // BONUS: slow purple breathing
+  lightsAll("lit-purple", 320);
+}
+function lightsGreenFlash(){                    // FREE SPIN: quick green blink
+  lightsAll("lit-green", 150);
+}
+function lightsWinner(slot){                    // WIN: only the winning slot pulses
+  stopLights();
+  let on = false;
+  lightTimer = setInterval(()=>{
+    on = !on;
+    slots[slot].classList.toggle("lit-gold", on);
+  }, 220);
+}
+
+/* ---------- API ---------- */
 async function api(path, body){
   const r = await fetch("/api/"+path,{
     method: body?"POST":"GET",
@@ -214,38 +364,58 @@ const wrap = $("wheel"), slots=[];
 WHEEL.forEach((key,i)=>{
   const a = (i/WHEEL.length)*2*Math.PI - Math.PI/2;
   const el = document.createElement("div");
-  el.className="slot"; el.style.background=TEAMS[key].c;
+  el.className="slot"; el.style.background=ANIMALS[key].c;
   el.style.left = (50+43*Math.cos(a))+"%"; el.style.top = (50+43*Math.sin(a))+"%";
-  el.innerHTML = `<em>${TEAMS[key].n}</em>`;
-  const img=new Image(); img.src=`logos/${key}.png`;
-  img.onload=()=>{ el.style.background=`#fff url(logos/${key}.png) center/78% no-repeat`; el.querySelector("em").style.display="none"; };
+  el.innerHTML = "<em>"+ANIMALS[key].n+"</em>";
+  if(key==="star"){
+    el.style.background="radial-gradient(circle at 35% 30%,#fff3b0,#f3c440 60%,#c99a06)";
+    const em=el.querySelector("em");
+    em.style.fontSize="15px"; em.style.color="#241300"; em.style.lineHeight="1";
+  } else {
+    const img=new Image(); img.src="logos/"+key+".png";
+    img.onload=()=>{ el.style.background="#fff url(logos/"+key+".png) center/cover no-repeat";
+                     const em=el.querySelector("em"); if(em) em.style.display="none"; };
+  }
   wrap.appendChild(el); slots.push(el);
 });
 
 /* ---- build bet panel + chips ---- */
 BETTABLE.forEach(key=>{
-  const t=TEAMS[key], el=document.createElement("div");
+  const t=ANIMALS[key], el=document.createElement("div");
   el.className="bet"; el.id="bet-"+key;
-  el.innerHTML=`<div class="dot" style="background:${t.c}">${t.n}</div>
-    <small>pays</small><b>${t.odds}×</b><div class="amt" id="amt-${key}"></div>`;
+  el.innerHTML='<div class="dot" style="background:'+t.c+'">'+t.n+'</div>'+
+    '<small>'+(t.star?"<span style=\'color:var(--gold)\'>\u2605 STAR</span>"
+      :(t.big?"<span style=\'color:var(--gold)\'>BIG 5</span>":"pays"))+'</small>'+
+    '<b>'+t.odds+'\u00D7</b><div class="amt" id="amt-'+key+'"></div>';
+  if(t.star){ el.style.borderColor="var(--gold)"; el.style.background="linear-gradient(#2a1c04,#160b0b)";
+    const d=el.querySelector(".dot"); d.style.fontSize="18px"; d.style.color="#241300"; }
+  else if(t.big) el.style.borderColor="#7a6420";
   el.onclick=()=>{ if(spinning) return;
     bets[key]=(bets[key]||0)+chip*100;
-    el.classList.add("active"); $("amt-"+key).textContent="KSh "+(bets[key]/100).toLocaleString();
+    el.classList.add("active");
+    $("amt-"+key).textContent="KSh "+(bets[key]/100).toLocaleString();
+    ac(); sfx.chip();
+    if(!music.mood) setMusic("idle");      // ambient starts on the first bet
   };
   el.oncontextmenu=e=>{e.preventDefault(); delete bets[key];
     el.classList.remove("active"); $("amt-"+key).textContent="";};
-  const dimg=new Image(); dimg.src=`logos/${key}.png`;
-  dimg.onload=()=>{ const d=el.querySelector(".dot"); d.style.background=`#fff url(logos/${key}.png) center/80% no-repeat`; d.textContent=""; };
+  if(!t.star){
+    const dimg=new Image(); dimg.src="logos/"+key+".png";
+    dimg.onload=()=>{ const d=el.querySelector(".dot");
+      d.style.background="#fff url(logos/"+key+".png) center/cover no-repeat"; d.textContent=""; };
+  }
   $("bets").appendChild(el);
 });
 CHIP_VALUES.forEach(v=>{
   const b=document.createElement("button");
   b.className="chip"+(v===chip?" sel":""); b.textContent=v;
-  b.onclick=()=>{chip=v;[...$("chips").children].forEach(c=>c.classList.remove("sel"));b.classList.add("sel");};
+  b.onclick=()=>{chip=v;[...$("chips").children].forEach(c=>c.classList.remove("sel"));b.classList.add("sel");sfx.chip();};
   $("chips").appendChild(b);
 });
 
-let lastJackpotAt = 0, isLive = true;
+function clearBets(){ bets={}; BETTABLE.forEach(k=>{ $("bet-"+k).classList.remove("active"); $("amt-"+k).textContent=""; }); }
+function setBalance(k){ balance=k; $("balance").textContent=money(k); }
+
 async function refreshWinners(){
   if(!isLive){ $("winnersBar").style.display="none"; return; }
   try{
@@ -253,33 +423,30 @@ async function refreshWinners(){
     if(!w.length){ $("winnersBar").style.display="none"; return; }
     $("winnersBar").style.display="block";
     $("winnersTrack").innerHTML = w.map(x =>
-      (x.jackpot ? "🏆 <b style='color:var(--gold)'>JACKPOT</b> — " : "⚽ ") +
+      (x.jackpot ? "\u{1F3C6} <b style='color:var(--gold)'>JACKPOT</b> — " : "\u{1F981} ") +
       x.name + " won <b>KSh " + (x.amount/100).toLocaleString("en-KE") + "</b>"
-    ).join('<span style="color:#5a4a1c"> &nbsp;•&nbsp; </span>');
+    ).join('<span style="color:#5a4a1c"> &nbsp;\u2022&nbsp; </span>');
     const jp = w.find(x => x.jackpot);
     if(jp && jp.at > lastJackpotAt){
-      if(lastJackpotAt) $("hubMsg").textContent = "🏆 " + jp.name + " just hit the JACKPOT!";
+      if(lastJackpotAt) $("hubMsg").textContent = "\u{1F3C6} " + jp.name + " just hit the JACKPOT!";
       lastJackpotAt = jp.at;
     }
-  }catch{}
+  }catch(e){}
 }
 async function refreshPool(){
   try{ const j = await fetch("/api/jackpot").then(r=>r.json());
-    $("jackpotPool").textContent = "KSh " + (j.pool/100).toLocaleString("en-KE"); }catch{}
+    $("jackpotPool").textContent = "KSh " + (j.pool/100).toLocaleString("en-KE"); }catch(e){}
 }
-function clearBets(){ bets={}; BETTABLE.forEach(k=>{ $("bet-"+k).classList.remove("active"); $("amt-"+k).textContent=""; }); }
-function setBalance(k){ balance=k; $("balance").textContent=money(k); }
 
-/* ---- auth ---- */
 function showPaybill(id){
   $("paybillNote").innerHTML = "Or pay the paybill directly from your M-Pesa menu — "+
     "Account number: <b style='color:var(--gold)'>SPIN"+id+"</b>. Your wallet credits automatically.";
 }
-let myPhone="";
 function applyAccount(me){
   myPhone = me.phone || "";
   const local = myPhone ? "0"+myPhone.slice(3) : "";
   $("depPhone").value = local;
+  if(me.wht>0) $("wdDest").dataset.wht=me.wht;
   $("wdDest").textContent = me.phone_verified
     ? "Winnings are sent to your registered number "+local+"."
     : "Withdrawals unlock after your first deposit from your registered number "+local+" (this verifies it's yours).";
@@ -290,92 +457,205 @@ function applyMode(live){
   $("depositBtn").disabled = !live; $("withdrawBtn").disabled = !live;
   if(!live) $("winnersBar").style.display="none"; else refreshWinners();
 }
+
+/* ---- auth ---- */
 async function boot(){
   if(!token) return;
-  try{ const me = await api("me"); setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+  try{ const me = await api("me"); setBalance(me.balance); showPaybill(me.id);
+    applyMode(me.live); applyAccount(me);
     close_("authSheet"); $("hubMsg").textContent="Place your bets"; }
-  catch{ token=null; localStorage.removeItem("fs_token"); }
+  catch(e){ token=null; localStorage.removeItem("fs_token"); }
 }
 $("loginBtn").onclick = async ()=>{
   try{ const d=await api("login",{email:$("email").value,password:$("password").value});
     token=d.token; localStorage.setItem("fs_token",token); setBalance(d.balance);
     const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
-    close_("authSheet"); $("hubMsg").textContent="Place your bets";
-  }catch(e){ $("authErr").textContent=e.message; }
+    close_("authSheet"); $("hubMsg").textContent="Place your bets"; sfx.chip();
+  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
 };
 $("registerBtn").onclick = async ()=>{
-  try{ const d=await api("register",{email:$("email").value,password:$("password").value,phone:$("regPhone").value,full_name:$("regName").value,id_number:$("regId").value,over18:$("over18").checked});
+  try{ const d=await api("register",{email:$("email").value,password:$("password").value,
+      phone:$("regPhone").value,full_name:$("regName").value,id_number:$("regId").value,
+      over18:$("over18").checked});
     token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
     const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
-    close_("authSheet"); $("hubMsg").textContent="Deposit to play";
-  }catch(e){ $("authErr").textContent=e.message; }
+    close_("authSheet"); $("hubMsg").textContent="Deposit to play"; sfx.chip();
+  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
 };
 
 /* ---- deposit ---- */
 $("depositBtn").onclick=()=>open_("depositSheet");
+$("depCancel").onclick=()=>close_("depositSheet");
 $("depGo").onclick = async ()=>{
   try{
     const d = await api("deposit/init",{amount: Number($("depAmount").value), phone: $("depPhone").value});
-    $("depErr").textContent = d.message; // "Check your phone…"
+    $("depErr").textContent = d.message;
     const before = balance;
     const poll = setInterval(async ()=>{
       const me = await api("me");
       if(me.balance > before){ setBalance(me.balance); clearInterval(poll);
         close_("depositSheet"); $("depErr").textContent="";
-        $("hubMsg").textContent="Credited. Good luck!"; }
+        $("hubMsg").textContent="Credited. Good luck!"; sfx.win(); }
     }, 4000);
     setTimeout(()=>clearInterval(poll), 180000);
-  }catch(e){ $("depErr").textContent=e.message; }
+  }catch(e){ $("depErr").textContent=e.message; sfx.error(); }
 };
 
 /* ---- withdraw ---- */
 $("withdrawBtn").onclick = ()=>open_("withdrawSheet");
+$("wdCancel").onclick=()=>close_("withdrawSheet");
 $("wdGo").onclick = async ()=>{
+  const amt=Number($("wdAmount").value);
+  if(amt>70000){ close_("withdrawSheet"); $("plAmount").value=amt; open_("plSheet"); return; }
   try{
-    const d = await api("withdraw",{amount:Number($("wdAmount").value)});
+    const d = await api("withdraw",{amount:amt});
     setBalance(d.balance); close_("withdrawSheet");
-    $("hubMsg").textContent=d.message;
-  }catch(e){ $("wdErr").textContent=e.message; }
+    $("hubMsg").textContent=d.message; sfx.win();
+  }catch(e){ $("wdErr").textContent=e.message; sfx.error(); }
 };
+$("plCancel").onclick=()=>close_("plSheet");
+$("plGo").onclick = async ()=>{
+  try{
+    const d = await api("withdraw/pesalink",{amount:Number($("plAmount").value),
+      bank:$("plBank").value, account:$("plAcct").value});
+    setBalance(d.balance); close_("plSheet");
+    $("hubMsg").textContent=d.message; sfx.win();
+  }catch(e){ $("plErr").textContent=e.message; sfx.error(); }
+};
+
+/* ---- diamond bonus: pick 3 of 9 ---- */
+function playBonus(token){
+  return new Promise(resolve=>{
+    const grid=$("bonusGrid"); grid.innerHTML=""; let picked=[];
+    $("bonusTotal").textContent=""; $("bonusDone").style.display="none";
+    $("bonusMsg").textContent="Each tile hides a multiplier of your stake. Choose three.";
+    for(let i=0;i<9;i++){
+      const t=document.createElement("button");
+      t.textContent="?"; t.dataset.i=i;
+      t.style.cssText="aspect-ratio:1;font-size:20px;background:linear-gradient(#6a2a9e,#3d1560);color:#fff;box-shadow:0 3px 0 #24093a;border-radius:12px;padding:0";
+      t.onclick=async ()=>{
+        if(picked.length>=3||picked.includes(i)) return;
+        picked.push(i); t.disabled=true; t.style.opacity="1";
+        t.textContent="\u2726"; sfx.chip();
+        if(picked.length===3){
+          $("bonusMsg").textContent="Revealing…";
+          try{
+            const r=await api("bonus/pick",{token:token,picks:picked});
+            const rev={}; r.revealed.forEach(x=>rev[x.i]=x.mult);
+            [...grid.children].forEach((b,idx)=>{
+              b.disabled=true;
+              if(rev[idx]!=null){ b.textContent=rev[idx]+"\u00D7";
+                b.style.background="linear-gradient(#ffe08a,var(--gold))"; b.style.color="#241300"; }
+              else { b.textContent=r.all[idx]+"\u00D7"; b.style.opacity=".35"; }
+            });
+            setBalance(r.balance);
+            $("bonusTotal").innerHTML="BONUS WIN: KSh "+(r.payout/100).toLocaleString()+
+              (r.tax>0?"<br><span style='font-size:11px;color:#caa'>after KSh "+(r.tax/100).toLocaleString()+" withholding tax</span>":"");
+            $("bonusMsg").textContent="";
+            sfx.bigWin();
+            if(navigator.vibrate) navigator.vibrate([120,60,120,60,200]);
+            $("bonusDone").style.display="block";
+            $("bonusDone").onclick=()=>{ close_("bonusSheet"); stopMusic(); resolve(); };
+          }catch(e){
+            $("bonusMsg").textContent=e.message; sfx.error();
+            $("bonusDone").style.display="block";
+            $("bonusDone").onclick=()=>{ close_("bonusSheet"); resolve(); };
+          }
+        }
+      };
+      grid.appendChild(t);
+    }
+    open_("bonusSheet");
+  });
+}
+
+/* ---- present one spin outcome ---- */
+async function showOutcome(d,isRespin){
+  await chase(d.slot);
+  $("lastWin").textContent = money(d.payout);
+  if(d.jackpot>0){
+    // JACKPOT: gold/purple wave around the whole wheel + triumphant theme
+    $("hubMsg").textContent="JACKPOT! KSh "+(d.jackpot/100).toLocaleString();
+    $("hubNum").textContent="JP";
+    lightsRainbow(); sfx.jackpot(); setMusic("jackpot");
+    if(navigator.vibrate) navigator.vibrate([200,80,200,80,400]);
+    await new Promise(r=>setTimeout(r,4200));
+    stopLights(); stopMusic();
+  } else if(d.key==="bonus" && d.bonus){
+    // BONUS: purple breathing lights + mysterious theme through the pick game
+    $("hubMsg").textContent="\u{1F48E} DIAMOND BONUS!";
+    lightsPurplePulse(); sfx.bigWin(); setMusic("bonus");
+    if(navigator.vibrate) navigator.vibrate([150,60,150]);
+    await new Promise(r=>setTimeout(r,900));
+    await playBonus(d.bonus.token);
+    stopLights(); stopMusic();
+  } else if(d.key==="respin"){
+    // FREE SPIN: green blink, brief
+    $("hubMsg").textContent="\u{1F48E} FREE SPIN!";
+    lightsGreenFlash(); sfx.win();
+    if(navigator.vibrate) navigator.vibrate([100,50,100]);
+    await new Promise(r=>setTimeout(r,1100));
+    stopLights();
+  } else if(d.payout>0){
+    // WIN: only the winning slot pulses gold
+    $("hubMsg").innerHTML="WINNER! KSh "+(d.payout/100).toLocaleString()+
+      (d.tax>0?"<br><span style='font-size:9px'>after KSh "+(d.tax/100).toLocaleString()+" tax</span>":"");
+    lightsWinner(d.slot);
+    if(d.payout>=100000) sfx.bigWin(); else sfx.win();
+    if(navigator.vibrate) navigator.vibrate([80,40,80]);
+    await new Promise(r=>setTimeout(r,1600));
+    stopLights();
+  } else {
+    // NO WIN: lights out, short low tone
+    stopLights();
+    $("hubMsg").textContent = isRespin ? "Free spin — no win" : "No win — try again";
+    sfx.lose();
+  }
+}
 
 /* ---- spin with light chase ---- */
 $("spinBtn").onclick = async ()=>{
   if(spinning) return;
-  if(!Object.keys(bets).length){ $("hubMsg").textContent="Tap a team to bet first"; return; }
+  if(!Object.keys(bets).length){ $("hubMsg").textContent="Tap a symbol to bet first"; sfx.error(); return; }
+  ac(); // unlock audio on user gesture (browsers block autoplay before this)
   spinning=true; $("spinBtn").disabled=true; $("hubMsg").textContent="";
+  sfx.spin();
   try{
     const d = await api("spin",{bets});
-    setBalance(d.balance - 0); // final balance after settle; animate win display below
-    await chase(d.slot);
-    $("lastWin").textContent = money(d.payout);
+    await showOutcome(d,false);
+    if(d.respin) await showOutcome(d.respin,true);
+    setBalance(d.balance);
     if(d.pool!=null) $("jackpotPool").textContent = "KSh " + (d.pool/100).toLocaleString("en-KE");
     if(d.live===false) applyMode(false); else refreshWinners();
-    if(d.jackpot>0){
-      $("hubMsg").textContent = "JACKPOT! KSh "+ (d.jackpot/100).toLocaleString();
-      $("hubNum").textContent = "JP";
-      if(navigator.vibrate) navigator.vibrate([200,80,200,80,400]);
-    } else {
-      $("hubMsg").textContent = d.payout>0 ? "WINNER! KSh "+ (d.payout/100).toLocaleString() : "No win — try again";
-      if(navigator.vibrate && d.payout>0) navigator.vibrate([80,40,80]);
-    }
-  }catch(e){ $("hubMsg").textContent=e.message; }
+  }catch(e){ stopLights(); stopMusic(); $("hubMsg").textContent=e.message; sfx.error(); }
   clearBets(); spinning=false; $("spinBtn").disabled=false;
+  setMusic("idle");                        // ambient loop returns between rounds
 };
 
 function chase(target){
   return new Promise(res=>{
-    const total = WHEEL.length*3 + target;   // 3 full loops then land
+    stopLights();
+    setMusic("spin");                       // driving loop while the wheel runs
+    const total = WHEEL.length*3 + target;
     let i=0, delay=40;
     (function step(){
       slots.forEach(s=>s.classList.remove("lit"));
       slots[i%WHEEL.length].classList.add("lit");
       $("hubNum").textContent = String(i%WHEEL.length).padStart(2,"0");
-      if(i>=total){ return setTimeout(res,500); }
-      i++; delay = i>total-10 ? delay+35 : delay; // decelerate at the end
+      sfx.tick();
+      if(i>=total){
+        stopMusic();                        // music stops exactly where the wheel stops
+        return setTimeout(res,400);
+      }
+      i++; delay = i>total-10 ? delay+35 : delay;
       setTimeout(step, delay);
     })();
   });
 }
+
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){ stopMusic(); } else if(!spinning && soundOn){ setMusic("idle"); }
+});
 
 boot(); refreshPool(); refreshWinners();
 setInterval(refreshPool, 15000); setInterval(refreshWinners, 20000);
