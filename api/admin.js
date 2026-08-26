@@ -198,7 +198,7 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   <h1>Operator console</h1>
   <input id="pw" type="password" placeholder="Password" autocomplete="current-password">
   <input id="code" inputmode="numeric" placeholder="Authenticator code" maxlength="6">
-  <div class="err" id="lerr"></div><button class="on" style="width:100%" onclick="login()">Sign in</button>
+  <div class="err" id="lerr"></div><button class="on" style="width:100%" id="loginBtn">Sign in</button>
 </div>
 <div id="panel" style="display:none">
   <div class="row" style="justify-content:space-between"><h1>Operator console</h1>
@@ -208,11 +208,11 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
 
   <h2>Controls</h2>
   <div class="row">
-    <button id="btnMode" onclick="toggle('live_mode')"></button>
-    <button id="btnWd" onclick="toggle('withdrawals_enabled')"></button>
+    <button id="btnMode"></button>
+    <button id="btnWd"></button>
     <span style="flex:1"></span>
     <input id="jp" type="number" placeholder="Jackpot KSh" style="width:130px">
-    <button onclick="setJackpot()">Set jackpot</button>
+    <button id="jpBtn">Set jackpot</button>
   </div>
   <p style="color:#7d8590;font-size:12px">Pause withdrawals during a glitch — deposits and play continue, balances are safe. Demo mode pauses all real money; players get free credits.</p>
 
@@ -220,49 +220,124 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   <div class="scroll"><table id="daily"><thead><tr><th>Date</th><th>Spins</th><th>Staked</th><th>Paid out</th><th>Profit</th><th>Margin</th></tr></thead><tbody></tbody></table></div>
 
   <h2>Players</h2>
-  <div class="row"><input id="q" placeholder="Search email" style="flex:1" onkeydown="if(event.key==='Enter')loadPlayers()"><button onclick="loadPlayers()">Search</button></div>
+  <div class="row"><input id="q" placeholder="Search email" style="flex:1"><button id="searchBtn">Search</button></div>
   <div class="scroll"><table id="players"><thead><tr><th>ID</th><th>Name</th><th>Nat. ID</th><th>Email</th><th>Phone</th><th>Balance</th><th>Deposited</th><th>Withdrawn</th><th>Net lost</th><th></th></tr></thead><tbody></tbody></table></div>
 
   <h2 class="row" style="justify-content:space-between">Recent transactions
-    <button onclick="exportTx()">Download all (CSV)</button></h2>
+    <button id="exportBtn">Download all (CSV)</button></h2>
   <div class="scroll"><table id="tx"><thead><tr><th>ID</th><th>Player</th><th>Kind</th><th>Amount</th><th>Status</th><th>Phone</th><th>When</th></tr></thead><tbody></tbody></table></div>
 </div>
 <script>
 const B="__BASE__"; let T=sessionStorage.getItem("adm")||null; let S={};
 const K=c=>"KSh "+(c/100).toLocaleString("en-KE");
 const api=async(p,b)=>{const r=await fetch(B+p,{method:b?"POST":"GET",headers:{"Content-Type":"application/json",Authorization:"Bearer "+T},body:b?JSON.stringify(b):undefined});const d=await r.json();if(!r.ok)throw new Error(d.error||"Error");return d};
-async function login(){try{const d=await api("/login",{password:pw.value,code:code.value});T=d.token;sessionStorage.setItem("adm",T);show()}catch(e){lerr.textContent=e.message}}
-async function show(){document.getElementById("login").style.display="none";document.getElementById("panel").style.display="block";await refresh();loadPlayers();loadTx()}
+
+async function login(){
+  try{const d=await api("/login",{password:document.getElementById("pw").value,code:document.getElementById("code").value});
+    T=d.token;sessionStorage.setItem("adm",T);show();
+  }catch(e){document.getElementById("lerr").textContent=e.message}
+}
+
+async function show(){
+  document.getElementById("login").style.display="none";
+  document.getElementById("panel").style.display="block";
+  await refresh();loadPlayers();loadTx();
+}
+
 async function refresh(){
   const s=await api("/stats");S=s.settings;
   const today=s.daily[0]||{staked:0,paid:0,profit:0,spins:0};
-  cards.innerHTML=[["Profit today",K(today.profit),today.profit>=0?"pos":"neg"],["Spins today",today.spins],["Players",s.players],["Deposits (all-time)",K(s.deposits.total)],["Withdrawals (all-time)",K(s.withdrawals.total)],["Player balances (liability)",K(s.player_balances)],["Pending payouts",s.pending_withdrawals.count+" / "+K(s.pending_withdrawals.total)],["Jackpot pool",K(s.jackpot_pool)]]
-    .map(([l,v,c])=>'<div class="card"><small>'+l+'</small><b class="'+(c||"")+'">'+v+"</b></div>").join("");
-  daily.tBodies[0].innerHTML=s.daily.map(d=>"<tr><td>"+d.date+"</td><td>"+d.spins+"</td><td>"+K(d.staked)+"</td><td>"+K(d.paid)+'</td><td class="'+(d.profit>=0?"pos":"neg")+'">'+K(d.profit)+"</td><td>"+(d.staked?Math.round(100*d.profit/d.staked)+"%":"—")+"</td></tr>").join("");
-  modeBadge.textContent=S.live_mode?"LIVE":"DEMO";modeBadge.className="badge "+(S.live_mode?"live":"demo");
-  wdBadge.textContent=S.withdrawals_enabled?"Withdrawals ON":"Withdrawals PAUSED";
+  document.getElementById("cards").innerHTML=[
+    ["Profit today",K(today.profit),today.profit>=0?"pos":"neg"],
+    ["Spins today",today.spins],
+    ["Players",s.players],
+    ["Deposits (all-time)",K(s.deposits.total)],
+    ["Withdrawals (all-time)",K(s.withdrawals.total)],
+    ["Player balances (liability)",K(s.player_balances)],
+    ["Pending payouts",s.pending_withdrawals.count+" / "+K(s.pending_withdrawals.total)],
+    ["Jackpot pool",K(s.jackpot_pool)]
+  ].map(function(row){
+    var l=row[0],v=row[1],c=row[2];
+    return '<div class="card"><small>'+l+'</small><b class="'+(c||"")+'">'+v+"</b></div>";
+  }).join("");
+
+  document.getElementById("daily").tBodies[0].innerHTML=s.daily.map(function(d){
+    return "<tr><td>"+d.date+"</td><td>"+d.spins+"</td><td>"+K(d.staked)+"</td><td>"+K(d.paid)+
+      '</td><td class="'+(d.profit>=0?"pos":"neg")+'">'+K(d.profit)+"</td><td>"+
+      (d.staked?Math.round(100*d.profit/d.staked)+"%":"—")+"</td></tr>";
+  }).join("");
+
+  document.getElementById("modeBadge").textContent=S.live_mode?"LIVE":"DEMO";
+  document.getElementById("modeBadge").className="badge "+(S.live_mode?"live":"demo");
+  document.getElementById("wdBadge").textContent=S.withdrawals_enabled?"Withdrawals ON":"Withdrawals PAUSED";
+  var btnMode=document.getElementById("btnMode");
   btnMode.textContent=S.live_mode?"Switch to DEMO mode":"Switch to LIVE mode";
   btnMode.className=S.live_mode?"":"on";
+  var btnWd=document.getElementById("btnWd");
   btnWd.textContent=S.withdrawals_enabled?"Pause withdrawals":"Resume withdrawals";
   btnWd.className=S.withdrawals_enabled?"danger":"on";
 }
-async function toggle(k){if(k==="live_mode"&&!confirm(S.live_mode?"Switch everyone to DEMO (free) mode?":"Go LIVE with real money?"))return;
+
+async function toggle(k){
+  if(k==="live_mode"&&!confirm(S.live_mode?"Switch everyone to DEMO (free) mode?":"Go LIVE with real money?"))return;
   if(k==="withdrawals_enabled"&&S.withdrawals_enabled&&!confirm("Pause all withdrawals?"))return;
-  await api("/settings",{[k]:!S[k]});refresh()}
-async function setJackpot(){await api("/jackpot",{pool:Number(jp.value)*100});jp.value="";refresh()}
-async function loadPlayers(){const p=await api("/players?q="+encodeURIComponent(q.value||""));
-  players.tBodies[0].innerHTML=p.map(u=>"<tr><td>"+u.id+"</td><td>"+(u.full_name||"—")+"</td><td>"+(u.id_number||"—")+" <button style=\"padding:2px 8px;font-size:11px\" "+(u.id_verified?'class="on"':"")+" onclick=\"idv("+u.id+","+!u.id_verified+")\">"+(u.id_verified?"ID ✓":"Mark ID ✓")+"</button></td><td>"+u.email+"</td><td>"+(u.phone?"0"+u.phone.slice(3):"—")+(u.phone_verified?" ✓":" ✗")+"</td><td>"+K(u.balance)+"</td><td>"+K(u.deposited)+"</td><td>"+K(u.withdrawn)+'</td><td class="'+(u.net_lost>=0?"pos":"neg")+'">'+K(u.net_lost)+"</td><td><button "+(u.suspended?'class="on"':"")+" onclick=\\"susp("+u.id+","+!u.suspended+")\\">"+(u.suspended?"Unsuspend":"Suspend")+"</button></td></tr>").join("")}
-async function susp(id,v){await api("/players/"+id+"/suspend",{suspended:v});loadPlayers()}
-async function idv(id,v){await api("/players/"+id+"/idverify",{verified:v});loadPlayers()}
+  var body={};body[k]=!S[k];
+  await api("/settings",body);refresh();
+}
+
+async function setJackpot(){
+  var jp=document.getElementById("jp");
+  await api("/jackpot",{pool:Number(jp.value)*100});jp.value="";refresh();
+}
+
+async function loadPlayers(){
+  var q=document.getElementById("q").value||"";
+  var p=await api("/players?q="+encodeURIComponent(q));
+  document.getElementById("players").tBodies[0].innerHTML=p.map(function(u){
+    return "<tr><td>"+u.id+"</td><td>"+(u.full_name||"—")+"</td>"+
+      "<td>"+(u.id_number||"—")+' <button class="idvbtn'+(u.id_verified?" on":"")+'" data-id="'+u.id+'" data-v="'+(!u.id_verified)+'">'+(u.id_verified?"ID \u2713":"Mark ID \u2713")+"</button></td>"+
+      "<td>"+u.email+"</td><td>"+(u.phone?"0"+u.phone.slice(3):"—")+(u.phone_verified?" \u2713":" \u2717")+"</td>"+
+      "<td>"+K(u.balance)+"</td><td>"+K(u.deposited)+"</td><td>"+K(u.withdrawn)+"</td>"+
+      '<td class="'+(u.net_lost>=0?"pos":"neg")+'">'+K(u.net_lost)+"</td>"+
+      '<td><button class="suspbtn'+(u.suspended?" on":"")+'" data-id="'+u.id+'" data-v="'+(!u.suspended)+'">'+(u.suspended?"Unsuspend":"Suspend")+"</button></td></tr>";
+  }).join("");
+  document.querySelectorAll(".idvbtn").forEach(function(b){
+    b.onclick=function(){idv(Number(b.dataset.id), b.dataset.v==="true");};
+  });
+  document.querySelectorAll(".suspbtn").forEach(function(b){
+    b.onclick=function(){susp(Number(b.dataset.id), b.dataset.v==="true");};
+  });
+}
+
+async function susp(id,v){await api("/players/"+id+"/suspend",{suspended:v});loadPlayers();}
+async function idv(id,v){await api("/players/"+id+"/idverify",{verified:v});loadPlayers();}
+
 async function exportTx(){
   const r=await fetch(B+"/tx/export",{headers:{Authorization:"Bearer "+T}});
   if(!r.ok){alert("Export failed — log in again.");return}
   const blob=await r.blob();const a=document.createElement("a");
   a.href=URL.createObjectURL(blob);
   a.download="transactions-"+new Date().toISOString().slice(0,10)+".csv";
-  a.click();URL.revokeObjectURL(a.href)}
-async function loadTx(){const t=await api("/tx");
-  tx.tBodies[0].innerHTML=t.map(x=>"<tr><td>"+x.id+"</td><td>"+x.email+"</td><td>"+x.kind+"</td><td>"+K(x.amount)+"</td><td>"+x.status+"</td><td>"+(x.phone||"")+"</td><td>"+new Date(Number(x.created)).toLocaleString()+"</td></tr>").join("")}
+  a.click();URL.revokeObjectURL(a.href);
+}
+
+async function loadTx(){
+  const t=await api("/tx");
+  document.getElementById("tx").tBodies[0].innerHTML=t.map(function(x){
+    return "<tr><td>"+x.id+"</td><td>"+x.email+"</td><td>"+x.kind+"</td><td>"+K(x.amount)+"</td><td>"+x.status+"</td><td>"+(x.phone||"")+"</td><td>"+new Date(Number(x.created)).toLocaleString()+"</td></tr>";
+  }).join("");
+}
+
+document.getElementById("loginBtn").onclick=login;
+document.getElementById("btnMode").onclick=function(){toggle("live_mode")};
+document.getElementById("btnWd").onclick=function(){toggle("withdrawals_enabled")};
+document.getElementById("jpBtn").onclick=setJackpot;
+document.getElementById("searchBtn").onclick=loadPlayers;
+document.getElementById("q").addEventListener("keydown",function(e){if(e.key==="Enter")loadPlayers();});
+document.getElementById("exportBtn").onclick=exportTx;
+
 if(T)show();
-setInterval(()=>{if(T&&document.getElementById("panel").style.display!=="none")refresh()},30000);
+setInterval(function(){
+  if(T&&document.getElementById("panel").style.display!=="none")refresh();
+},30000);
 </script></body></html>`;
