@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Football Spin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cab-red:#7d0f12; --cab-deep:#3f0608; --panel:#160b0b;
+    --led:#ff3b30; --led-dim:#3a0d0b; --gold:#f3c440; --pitch:#2fae5e;
+    --lamp:#fff6d8; --ink:#f5efe6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    font-family:Barlow,system-ui,sans-serif;color:var(--ink);
+    background:
+      radial-gradient(120% 70% at 50% 0%, #a3181c 0%, var(--cab-red) 45%, var(--cab-deep) 100%);
+    min-height:100dvh;padding-bottom:120px;
+  }
+  header{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:14px 16px 6px;
+  }
+  h1{font-family:'Russo One';font-size:20px;letter-spacing:1px;color:var(--gold);
+     text-shadow:0 2px 0 #5c3a00}
+  .age{font-size:11px;border:1.5px solid var(--gold);border-radius:50%;
+       width:30px;height:30px;display:grid;place-items:center;color:var(--gold);font-weight:600}
+
+  /* LED scoreboard */
+  .boards{display:flex;gap:10px;padding:6px 16px}
+  .board{flex:1;background:var(--panel);border:2px solid var(--gold);border-radius:10px;
+         padding:6px 10px;box-shadow:inset 0 0 18px #000}
+  .board small{display:block;font-family:'Russo One';font-size:10px;color:#ff7ab5;letter-spacing:2px}
+  .board b{font-variant-numeric:tabular-nums;font-family:'Russo One';font-size:22px;color:var(--led);
+           text-shadow:0 0 8px rgba(255,59,48,.8)}
+
+  /* wheel */
+  .wheel-wrap{position:relative;width:min(88vw,380px);aspect-ratio:1;margin:14px auto}
+  .hub{position:absolute;inset:15%;border-radius:50%;
+       background:radial-gradient(circle at 35% 30%, #2a1414, #0d0505 70%);
+       border:3px solid var(--gold);display:grid;place-items:center;box-shadow:0 0 40px rgba(0,0,0,.6)}
+  .hub .num{font-family:'Russo One';font-size:44px;color:var(--led);text-shadow:0 0 12px rgba(255,59,48,.9)}
+  .hub .msg{font-size:12px;color:#e8b7b7;margin-top:2px;min-height:15px;text-align:center;padding:0 14px}
+  .slot{position:absolute;width:13.5%;aspect-ratio:1;border-radius:50%;
+        display:grid;place-items:center;font-family:'Russo One';font-size:10px;
+        border:2px solid #cfe6ff;color:#fff;transform:translate(-50%,-50%);
+        box-shadow:0 2px 4px rgba(0,0,0,.5);transition:box-shadow .1s, filter .1s}
+  .slot.lit{box-shadow:0 0 0 4px var(--lamp), 0 0 22px 6px var(--lamp);filter:brightness(1.25)}
+  .slot em{font-style:normal;font-size:8px;display:block;text-align:center;line-height:1}
+
+  /* bet panel */
+  .bets{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 16px;margin-top:6px}
+  .bet{background:var(--panel);border:2px solid #5a4a1c;border-radius:10px;padding:8px 4px 6px;
+       text-align:center;position:relative}
+  .bet.active{border-color:var(--gold);box-shadow:0 0 12px rgba(243,196,64,.45)}
+  .bet .dot{width:26px;height:26px;border-radius:50%;margin:0 auto 4px;display:grid;place-items:center;
+            font-family:'Russo One';font-size:10px;color:#fff;border:2px solid #fff3}
+  .bet small{display:block;font-size:10px;color:#ffb0d5}
+  .bet b{font-family:'Russo One';font-size:14px;color:var(--led)}
+  .bet .amt{font-size:11px;color:var(--gold);min-height:14px}
+
+  /* controls */
+  .bar{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(#241010,#120707);
+       border-top:2px solid var(--gold);padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+       display:flex;gap:8px}
+  button{font-family:'Russo One';border:none;border-radius:12px;padding:12px 0;font-size:14px;
+         color:#241300;background:linear-gradient(#ffe08a,var(--gold));flex:1;
+         box-shadow:0 3px 0 #8a6a12;cursor:pointer}
+  button:active{transform:translateY(2px);box-shadow:0 1px 0 #8a6a12}
+  button.red{background:linear-gradient(#ff6b5e,#d92c20);color:#fff;box-shadow:0 3px 0 #7a140d}
+  button.ghost{background:transparent;color:var(--gold);border:2px solid var(--gold);box-shadow:none}
+  button:disabled{opacity:.5}
+  .chips{display:flex;gap:8px;justify-content:center;margin:10px 16px 0}
+  .chip{flex:0 0 auto;width:56px;padding:8px 0;border-radius:999px;font-size:13px}
+  .chip.sel{outline:3px solid #fff}
+
+  /* sheets */
+  .sheet{position:fixed;inset:0;background:rgba(10,3,3,.72);display:none;place-items:end center;z-index:9}
+  .sheet.open{display:grid}
+  .card{background:#1d0e0e;border:2px solid var(--gold);border-radius:18px 18px 0 0;width:100%;
+        max-width:480px;padding:20px 18px calc(20px + env(safe-area-inset-bottom))}
+  .card h2{font-family:'Russo One';color:var(--gold);font-size:16px;margin-bottom:12px}
+  .card label{font-size:12px;color:#e6c9c9;display:block;margin:10px 0 4px}
+  .card input,.card select{width:100%;padding:12px;border-radius:10px;border:1.5px solid #5a4a1c;
+        background:#0e0606;color:var(--ink);font-size:15px}
+  .card .err{color:#ff8a80;font-size:13px;min-height:16px;margin-top:8px}
+  .rg{font-size:11px;color:#caa;text-align:center;margin-top:14px;line-height:1.5}
+  .rg a{color:var(--gold)}
+</style>
+</head>
+<body>
+<header>
+  <h1>FOOTBALL SPIN</h1>
+  <span><span id="modeBadge" style="display:none;font-family:'Russo One';font-size:10px;background:#9e6a03;color:#fff;padding:3px 10px;border-radius:999px;margin-right:8px;vertical-align:middle">DEMO</span><span class="age" style="display:inline-grid">18+</span></span>
+</header>
+
+<div class="boards">
+  <div class="board"><small>BONUS-WIN</small><b id="lastWin">0.00</b></div>
+  <div class="board"><small>CREDIT KSh</small><b id="balance">0.00</b></div>
+</div>
+
+<div style="margin:8px 16px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
+     border:2px solid var(--gold);border-radius:10px;text-align:center;padding:5px">
+  <span style="font-family:'Russo One';font-size:11px;color:#ffd98a;letter-spacing:2px">JACKPOT</span>
+  <div style="font-family:'Russo One';font-size:24px;color:var(--gold);text-shadow:0 0 10px rgba(243,196,64,.7)" id="jackpotPool">KSh —</div>
+</div>
+
+<div id="winnersBar" style="display:none;margin:6px 16px 0;overflow:hidden;white-space:nowrap;
+     background:#1a0b0b;border:1px solid #5a4a1c;border-radius:8px;padding:6px 0">
+  <div id="winnersTrack" style="display:inline-block;padding-left:100%;animation:tick 30s linear infinite;
+       font-size:12px;color:#ffd98a"></div>
+</div>
+<style>@keyframes tick{to{transform:translateX(-100%)}}
+@media (prefers-reduced-motion: reduce){#winnersTrack{animation:none;padding-left:8px}}</style>
+
+<div class="wheel-wrap" id="wheel">
+  <div class="hub"><div class="num" id="hubNum">--</div><div class="msg" id="hubMsg">Log in to play</div></div>
+</div>
+
+<div class="bets" id="bets"></div>
+
+<div class="chips" id="chips"></div>
+
+<div class="bar">
+  <button class="ghost" id="depositBtn">Deposit</button>
+  <button class="ghost" id="withdrawBtn">Withdraw</button>
+  <button class="red" id="spinBtn">START</button>
+</div>
+
+<!-- auth sheet -->
+<div class="sheet open" id="authSheet"><div class="card">
+  <h2>Sign in</h2>
+  <label>Email</label><input id="email" type="email" autocomplete="email">
+  <label>Full name — as on your ID (new accounts)</label><input id="regName" autocomplete="name">
+  <label>National ID number (new accounts)</label><input id="regId" inputmode="numeric" maxlength="9">
+  <label>M-Pesa number (new accounts)</label><input id="regPhone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
+  <label>Password</label><input id="password" type="password" autocomplete="current-password">
+  <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
+    <input type="checkbox" id="over18" style="width:auto"> I confirm I am 18 or older
+  </label>
+  <div class="err" id="authErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="loginBtn">Log in</button>
+    <button class="ghost" id="registerBtn">Create account</button>
+  </div>
+  <p class="rg">Play responsibly. Betting is for entertainment — never stake money you can't afford to lose.
+  If gambling stops being fun, free help is available.</p>
+</div></div>
+
+<!-- deposit sheet -->
+<div class="sheet" id="depositSheet"><div class="card">
+  <h2>Deposit via M-Pesa</h2>
+  <label>M-Pesa number</label><input id="depPhone" inputmode="tel" placeholder="07XX XXX XXX">
+  <label>Amount (KSh 100 – 100,000)</label><input id="depAmount" type="number" min="100" max="100000" step="50" value="200">
+  <div class="err" id="depErr"></div>
+  <p class="rg" id="paybillNote" style="text-align:left;margin-top:10px"></p>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="depGo">Send M-Pesa prompt</button>
+    <button class="ghost" onclick="close_('depositSheet')">Cancel</button>
+  </div>
+</div></div>
+
+<!-- withdraw sheet -->
+<div class="sheet" id="withdrawSheet"><div class="card">
+  <h2>Withdraw to M-Pesa</h2>
+  <label>Amount (KSh, minimum 100)</label><input id="wdAmount" type="number" min="100" step="50">
+  <p class="rg" style="text-align:left" id="wdDest"></p>
+  <div class="err" id="wdErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="wdGo">Send to M-Pesa</button>
+    <button class="ghost" onclick="close_('withdrawSheet')">Cancel</button>
+  </div>
+</div></div>
+
+<script>
+/* ---- game data (must match server WHEEL order) ---- */
+const TEAMS = {
+  leicester:{n:"LEI",c:"#1c4fa0",odds:"50–100"}, manu:{n:"MUN",c:"#c11a1a",odds:"20–40"},
+  chelsea:{n:"CHE",c:"#1b458f",odds:"20–40"},   arsenal:{n:"ARS",c:"#d0101c",odds:"20–40"},
+  real:{n:"RMA",c:"#8d7bd0",odds:"10–20"},      liverpool:{n:"LIV",c:"#b02020",odds:"10–20"},
+  stoke:{n:"STK",c:"#c43a4a",odds:"10–20"},     norwich:{n:"NOR",c:"#2fae5e",odds:"5"},
+  allprize:{n:"ALL",c:"#7a1fa0"},               diamond:{n:"◆",c:"#3a3ad0"},
+};
+const WHEEL = ["leicester","leicester","allprize","norwich","liverpool","arsenal","arsenal","diamond",
+  "norwich","stoke","stoke","real","manu","manu","norwich","liverpool","liverpool","chelsea",
+  "chelsea","diamond","norwich","real","real","stoke"];
+const BETTABLE = ["leicester","manu","chelsea","arsenal","real","liverpool","stoke","norwich"];
+const CHIP_VALUES = [20,50,100,200];
+
+let token = localStorage.getItem("fs_token") || null;
+let balance = 0, bets = {}, chip = 20, spinning = false;
+
+const $ = id => document.getElementById(id);
+const money = k => (k/100).toLocaleString("en-KE",{minimumFractionDigits:2});
+const open_ = id => $(id).classList.add("open");
+const close_ = id => $(id).classList.remove("open");
+window.close_ = close_;
+
+async function api(path, body){
+  const r = await fetch("/api/"+path,{
+    method: body?"POST":"GET",
+    headers:{ "Content-Type":"application/json", ...(token?{Authorization:"Bearer "+token}:{}) },
+    body: body?JSON.stringify(body):undefined
+  });
+  const d = await r.json();
+  if(!r.ok) throw new Error(d.error||"Something went wrong.");
+  return d;
+}
+
+/* ---- build wheel ---- */
+const wrap = $("wheel"), slots=[];
+WHEEL.forEach((key,i)=>{
+  const a = (i/WHEEL.length)*2*Math.PI - Math.PI/2;
+  const el = document.createElement("div");
+  el.className="slot"; el.style.background=TEAMS[key].c;
+  el.style.left = (50+43*Math.cos(a))+"%"; el.style.top = (50+43*Math.sin(a))+"%";
+  el.innerHTML = `<em>${TEAMS[key].n}</em>`;
+  const img=new Image(); img.src=`logos/${key}.png`;
+  img.onload=()=>{ el.style.background=`#fff url(logos/${key}.png) center/78% no-repeat`; el.querySelector("em").style.display="none"; };
+  wrap.appendChild(el); slots.push(el);
+});
+
+/* ---- build bet panel + chips ---- */
+BETTABLE.forEach(key=>{
+  const t=TEAMS[key], el=document.createElement("div");
+  el.className="bet"; el.id="bet-"+key;
+  el.innerHTML=`<div class="dot" style="background:${t.c}">${t.n}</div>
+    <small>pays</small><b>${t.odds}×</b><div class="amt" id="amt-${key}"></div>`;
+  el.onclick=()=>{ if(spinning) return;
+    bets[key]=(bets[key]||0)+chip*100;
+    el.classList.add("active"); $("amt-"+key).textContent="KSh "+(bets[key]/100).toLocaleString();
+  };
+  el.oncontextmenu=e=>{e.preventDefault(); delete bets[key];
+    el.classList.remove("active"); $("amt-"+key).textContent="";};
+  const dimg=new Image(); dimg.src=`logos/${key}.png`;
+  dimg.onload=()=>{ const d=el.querySelector(".dot"); d.style.background=`#fff url(logos/${key}.png) center/80% no-repeat`; d.textContent=""; };
+  $("bets").appendChild(el);
+});
+CHIP_VALUES.forEach(v=>{
+  const b=document.createElement("button");
+  b.className="chip"+(v===chip?" sel":""); b.textContent=v;
+  b.onclick=()=>{chip=v;[...$("chips").children].forEach(c=>c.classList.remove("sel"));b.classList.add("sel");};
+  $("chips").appendChild(b);
+});
+
+let lastJackpotAt = 0, isLive = true;
+async function refreshWinners(){
+  if(!isLive){ $("winnersBar").style.display="none"; return; }
+  try{
+    const w = await fetch("/api/winners").then(r=>r.json());
+    if(!w.length){ $("winnersBar").style.display="none"; return; }
+    $("winnersBar").style.display="block";
+    $("winnersTrack").innerHTML = w.map(x =>
+      (x.jackpot ? "🏆 <b style='color:var(--gold)'>JACKPOT</b> — " : "⚽ ") +
+      x.name + " won <b>KSh " + (x.amount/100).toLocaleString("en-KE") + "</b>"
+    ).join('<span style="color:#5a4a1c"> &nbsp;•&nbsp; </span>');
+    const jp = w.find(x => x.jackpot);
+    if(jp && jp.at > lastJackpotAt){
+      if(lastJackpotAt) $("hubMsg").textContent = "🏆 " + jp.name + " just hit the JACKPOT!";
+      lastJackpotAt = jp.at;
+    }
+  }catch{}
+}
+async function refreshPool(){
+  try{ const j = await fetch("/api/jackpot").then(r=>r.json());
+    $("jackpotPool").textContent = "KSh " + (j.pool/100).toLocaleString("en-KE"); }catch{}
+}
+function clearBets(){ bets={}; BETTABLE.forEach(k=>{ $("bet-"+k).classList.remove("active"); $("amt-"+k).textContent=""; }); }
+function setBalance(k){ balance=k; $("balance").textContent=money(k); }
+
+/* ---- auth ---- */
+function showPaybill(id){
+  $("paybillNote").innerHTML = "Or pay the paybill directly from your M-Pesa menu — "+
+    "Account number: <b style='color:var(--gold)'>SPIN"+id+"</b>. Your wallet credits automatically.";
+}
+let myPhone="";
+function applyAccount(me){
+  myPhone = me.phone || "";
+  const local = myPhone ? "0"+myPhone.slice(3) : "";
+  $("depPhone").value = local;
+  $("wdDest").textContent = me.phone_verified
+    ? "Winnings are sent to your registered number "+local+"."
+    : "Withdrawals unlock after your first deposit from your registered number "+local+" (this verifies it's yours).";
+}
+function applyMode(live){
+  isLive = live;
+  $("modeBadge").style.display = live ? "none" : "inline";
+  $("depositBtn").disabled = !live; $("withdrawBtn").disabled = !live;
+  if(!live) $("winnersBar").style.display="none"; else refreshWinners();
+}
+async function boot(){
+  if(!token) return;
+  try{ const me = await api("me"); setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("authSheet"); $("hubMsg").textContent="Place your bets"; }
+  catch{ token=null; localStorage.removeItem("fs_token"); }
+}
+$("loginBtn").onclick = async ()=>{
+  try{ const d=await api("login",{email:$("email").value,password:$("password").value});
+    token=d.token; localStorage.setItem("fs_token",token); setBalance(d.balance);
+    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("authSheet"); $("hubMsg").textContent="Place your bets";
+  }catch(e){ $("authErr").textContent=e.message; }
+};
+$("registerBtn").onclick = async ()=>{
+  try{ const d=await api("register",{email:$("email").value,password:$("password").value,phone:$("regPhone").value,full_name:$("regName").value,id_number:$("regId").value,over18:$("over18").checked});
+    token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
+    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("authSheet"); $("hubMsg").textContent="Deposit to play";
+  }catch(e){ $("authErr").textContent=e.message; }
+};
+
+/* ---- deposit ---- */
+$("depositBtn").onclick=()=>open_("depositSheet");
+$("depGo").onclick = async ()=>{
+  try{
+    const d = await api("deposit/init",{amount: Number($("depAmount").value), phone: $("depPhone").value});
+    $("depErr").textContent = d.message; // "Check your phone…"
+    const before = balance;
+    const poll = setInterval(async ()=>{
+      const me = await api("me");
+      if(me.balance > before){ setBalance(me.balance); clearInterval(poll);
+        close_("depositSheet"); $("depErr").textContent="";
+        $("hubMsg").textContent="Credited. Good luck!"; }
+    }, 4000);
+    setTimeout(()=>clearInterval(poll), 180000);
+  }catch(e){ $("depErr").textContent=e.message; }
+};
+
+/* ---- withdraw ---- */
+$("withdrawBtn").onclick = ()=>open_("withdrawSheet");
+$("wdGo").onclick = async ()=>{
+  try{
+    const d = await api("withdraw",{amount:Number($("wdAmount").value)});
+    setBalance(d.balance); close_("withdrawSheet");
+    $("hubMsg").textContent=d.message;
+  }catch(e){ $("wdErr").textContent=e.message; }
+};
+
+/* ---- spin with light chase ---- */
+$("spinBtn").onclick = async ()=>{
+  if(spinning) return;
+  if(!Object.keys(bets).length){ $("hubMsg").textContent="Tap a team to bet first"; return; }
+  spinning=true; $("spinBtn").disabled=true; $("hubMsg").textContent="";
+  try{
+    const d = await api("spin",{bets});
+    setBalance(d.balance - 0); // final balance after settle; animate win display below
+    await chase(d.slot);
+    $("lastWin").textContent = money(d.payout);
+    if(d.pool!=null) $("jackpotPool").textContent = "KSh " + (d.pool/100).toLocaleString("en-KE");
+    if(d.live===false) applyMode(false); else refreshWinners();
+    if(d.jackpot>0){
+      $("hubMsg").textContent = "JACKPOT! KSh "+ (d.jackpot/100).toLocaleString();
+      $("hubNum").textContent = "JP";
+      if(navigator.vibrate) navigator.vibrate([200,80,200,80,400]);
+    } else {
+      $("hubMsg").textContent = d.payout>0 ? "WINNER! KSh "+ (d.payout/100).toLocaleString() : "No win — try again";
+      if(navigator.vibrate && d.payout>0) navigator.vibrate([80,40,80]);
+    }
+  }catch(e){ $("hubMsg").textContent=e.message; }
+  clearBets(); spinning=false; $("spinBtn").disabled=false;
+};
+
+function chase(target){
+  return new Promise(res=>{
+    const total = WHEEL.length*3 + target;   // 3 full loops then land
+    let i=0, delay=40;
+    (function step(){
+      slots.forEach(s=>s.classList.remove("lit"));
+      slots[i%WHEEL.length].classList.add("lit");
+      $("hubNum").textContent = String(i%WHEEL.length).padStart(2,"0");
+      if(i>=total){ return setTimeout(res,500); }
+      i++; delay = i>total-10 ? delay+35 : delay; // decelerate at the end
+      setTimeout(step, delay);
+    })();
+  });
+}
+
+boot(); refreshPool(); refreshWinners();
+setInterval(refreshPool, 15000); setInterval(refreshWinners, 20000);
+</script>
+</body>
+</html>
