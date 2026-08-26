@@ -75,7 +75,7 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
 
   /* ----- dashboard stats ----- */
   app.get(`${P}/stats`, adminAuth, async (_req, res) => {
-    const [users, dep, wd, daily, jack, st, pend] = await Promise.all([
+    const [users, dep, wd, daily, jack, st, pend, taxq, plq, expDaily, expAll] = await Promise.all([
       pool.query("SELECT COUNT(*) c, COALESCE(SUM(balance),0) bal FROM users"),
       pool.query("SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM tx WHERE kind='deposit' AND status='success'"),
       pool.query("SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM tx WHERE kind='withdraw' AND status='success'"),
@@ -85,17 +85,33 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
       pool.query("SELECT pool FROM jackpot WHERE id=1"),
       pool.query("SELECT key,value FROM settings"),
       pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='withdraw' AND status IN ('pending','sending')"),
+      pool.query("SELECT COALESCE(SUM(tax),0) t FROM spins WHERE demo=false"),
+      pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='pesalink' AND status='requested'"),
+      pool.query(`SELECT to_char(to_timestamp(created/1000),'YYYY-MM-DD') d, COALESCE(SUM(amount),0) s
+                  FROM expenses GROUP BY d ORDER BY d DESC LIMIT 30`),
+      pool.query("SELECT COALESCE(SUM(amount),0) s FROM expenses"),
     ]);
-    const settings = {}; st.rows.forEach(x => settings[x.key] = x.value === "true");
+    const BK = ["live_mode","withdrawals_enabled","wht_enabled"];
+    const settings = {}; st.rows.forEach(x => settings[x.key] = BK.includes(x.key) ? x.value === "true" : Number(x.value));
     res.json({
       players: Number(users.rows[0].c),
       player_balances: Number(users.rows[0].bal),        // your liability to players
       deposits: { total: Number(dep.rows[0].s), count: Number(dep.rows[0].c) },
       withdrawals: { total: Number(wd.rows[0].s), count: Number(wd.rows[0].c) },
       pending_withdrawals: { count: Number(pend.rows[0].c), total: Number(pend.rows[0].s) },
-      daily: daily.rows.map(r => ({ date: r.d, staked: Number(r.staked), paid: Number(r.paid),
-        profit: Number(r.staked) - Number(r.paid), spins: Number(r.spins) })),
+      daily: (function () {
+        const spend = {}; expDaily.rows.forEach(r => spend[r.d] = Number(r.s));
+        return daily.rows.map(r => {
+          const gross = Number(r.staked) - Number(r.paid);
+          const mk = spend[r.d] || 0;
+          return { date: r.d, staked: Number(r.staked), paid: Number(r.paid),
+            profit: gross, marketing: mk, net: gross - mk, spins: Number(r.spins) };
+        });
+      })(),
+      expenses_total: Number(expAll.rows[0].s),
       jackpot_pool: Number(jack.rows[0]?.pool || 0),
+      wht_collected: Number(taxq.rows[0].t),
+      pesalink_pending: { count: Number(plq.rows[0].c), total: Number(plq.rows[0].s) },
       settings,
     });
   });
@@ -125,14 +141,95 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
   });
 
   /* ----- switches ----- */
+  const BOOL_KEYS = ["live_mode", "withdrawals_enabled", "wht_enabled"];
+  const NUM_KEYS = ["wht_rate", "wht_threshold", "excise_rate", "betting_tax_rate", "corp_tax_rate", "target_rtp"];
+
   app.post(`${P}/settings`, adminAuth, async (req, res) => {
-    for (const k of ["live_mode", "withdrawals_enabled"]) {
+    for (const k of BOOL_KEYS) {
       if (k in (req.body || {}))
         await pool.query("UPDATE settings SET value=$2 WHERE key=$1", [k, String(!!req.body[k])]);
     }
+    for (const k of NUM_KEYS) {
+      if (k in (req.body || {})) {
+        const v = Number(req.body[k]);
+        if (!(v >= 0)) return res.status(400).json({ error: "Rates must be zero or higher." });
+        if (k === "target_rtp" && (v < 8 || v > 90))
+          return res.status(400).json({ error: "Payout rate must be between 8% and 90%." });
+        const prev = (await pool.query("SELECT value FROM settings WHERE key=$1", [k])).rows[0];
+        if (!prev || prev.value !== String(v)) {
+          await pool.query("UPDATE settings SET value=$2 WHERE key=$1", [k, String(v)]);
+          await pool.query(
+            "INSERT INTO settings_audit(key,old_value,new_value,created) VALUES($1,$2,$3,$4)",
+            [k, prev ? prev.value : null, String(v), Date.now()]);
+        }
+      }
+    }
     const r = await pool.query("SELECT key,value FROM settings");
-    const o = {}; r.rows.forEach(x => o[x.key] = x.value === "true");
+    const o = {}; r.rows.forEach(x => o[x.key] = BOOL_KEYS.includes(x.key) ? x.value === "true" : Number(x.value));
     res.json(o);
+  });
+
+  /* ----- marketing & other spend ----- */
+  app.get(`${P}/expenses`, adminAuth, async (_req, res) => {
+    const [rows, totals, month] = await Promise.all([
+      pool.query("SELECT * FROM expenses ORDER BY id DESC LIMIT 50"),
+      pool.query("SELECT category, COALESCE(SUM(amount),0) s FROM expenses GROUP BY category"),
+      pool.query("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE created >= $1",
+        [Date.now() - 30 * 864e5]),
+    ]);
+    res.json({
+      rows: rows.rows.map(x => ({ ...x, amount: Number(x.amount) })),
+      by_category: totals.rows.map(x => ({ category: x.category, total: Number(x.s) })),
+      last_30_days: Number(month.rows[0].s),
+    });
+  });
+
+  app.post(`${P}/expenses`, adminAuth, async (req, res) => {
+    const cents = Math.round(Number(req.body.amount) * 100);
+    const category = String(req.body.category || "marketing").slice(0, 40);
+    const note = String(req.body.note || "").slice(0, 200);
+    if (!(cents > 0)) return res.status(400).json({ error: "Enter an amount." });
+    await pool.query("INSERT INTO expenses(category,amount,note,created) VALUES($1,$2,$3,$4)",
+      [category, cents, note, Date.now()]);
+    res.json({ ok: true });
+  });
+
+  app.post(`${P}/expenses/:id/delete`, adminAuth, async (req, res) => {
+    await pool.query("DELETE FROM expenses WHERE id=$1", [req.params.id]);
+    res.json({ ok: true });
+  });
+
+  app.get(`${P}/audit`, adminAuth, async (_req, res) => {
+    const r = await pool.query("SELECT * FROM settings_audit ORDER BY id DESC LIMIT 30");
+    res.json(r.rows);
+  });
+
+  /* ----- PesaLink queue (large withdrawals, paid manually from your bank) ----- */
+  app.get(`${P}/pesalink`, adminAuth, async (_req, res) => {
+    const r = await pool.query(
+      `SELECT t.id, t.user_id, t.amount, t.ref, t.status, t.phone, t.bank, t.account, t.created,
+              u.full_name, u.id_number
+       FROM tx t JOIN users u ON u.id=t.user_id
+       WHERE t.kind='pesalink' ORDER BY (t.status='requested') DESC, t.id DESC LIMIT 50`);
+    res.json(r.rows.map(x => ({ ...x, amount: Number(x.amount) })));
+  });
+
+  app.post(`${P}/pesalink/:ref`, adminAuth, async (req, res) => {
+    const action = String(req.body.action || "");
+    const t = (await pool.query("SELECT * FROM tx WHERE ref=$1 AND kind='pesalink'", [req.params.ref])).rows[0];
+    if (!t || t.status !== "requested") return res.status(400).json({ error: "Request already handled." });
+    if (action === "paid") {
+      await pool.query("UPDATE tx SET status='success' WHERE id=$1", [t.id]);
+    } else if (action === "reject") {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("UPDATE tx SET status='failed' WHERE id=$1", [t.id]);
+        await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [t.user_id, Number(t.amount)]);
+        await client.query("COMMIT");
+      } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
+    } else return res.status(400).json({ error: "Unknown action." });
+    res.json({ ok: true });
   });
 
   app.post(`${P}/jackpot`, adminAuth, async (req, res) => {
@@ -216,8 +313,49 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   </div>
   <p style="color:#7d8590;font-size:12px">Pause withdrawals during a glitch — deposits and play continue, balances are safe. Demo mode pauses all real money; players get free credits.</p>
 
+  <h2>Payout rate (house margin)</h2>
+  <div class="row">
+    <label style="font-size:12px;color:#7d8590">Player payout (RTP) %
+      <input id="rtpInput" type="number" step="0.5" min="8" max="90" style="width:90px"></label>
+    <span id="rtpMargin" style="font-family:system-ui;font-size:15px"></span>
+    <button id="rtpSave" class="on">Apply</button>
+    <button id="auditBtn">Change log</button>
+  </div>
+  <p style="color:#7d8590;font-size:12px">Takes effect on the next spin. All bet types stay at the same RTP. Every change is timestamped in the change log — BCLB audits declared payout rates, so keep this matching your licence.</p>
+  <div class="scroll" id="auditWrap" style="display:none;margin-top:8px"><table id="audit"><thead><tr><th>When</th><th>Setting</th><th>From</th><th>To</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Marketing &amp; expenses</h2>
+  <div class="row">
+    <select id="expCat" style="background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:9px">
+      <option value="marketing">Marketing</option>
+      <option value="bonuses">Player bonuses</option>
+      <option value="hosting">Hosting / tech</option>
+      <option value="licensing">Licensing / legal</option>
+      <option value="other">Other</option>
+    </select>
+    <input id="expAmt" type="number" placeholder="Amount KSh" style="width:130px">
+    <input id="expNote" placeholder="Note (e.g. Facebook campaign)" style="flex:1;min-width:160px">
+    <button id="expAdd" class="on">Record spend</button>
+  </div>
+  <div class="scroll" style="margin-top:8px"><table id="exp"><thead><tr><th>Date</th><th>Category</th><th>Amount</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>
+
+  <h2>Tax &amp; margin</h2>
+  <div class="row">
+    <button id="btnWht"></button>
+    <label style="font-size:12px;color:#7d8590">WHT rate %<input id="whtRate" type="number" step="0.5" style="width:80px"></label>
+    <label style="font-size:12px;color:#7d8590">Excise % of stakes<input id="exRate" type="number" step="0.5" style="width:80px"></label>
+    <label style="font-size:12px;color:#7d8590">Betting tax % of GGR<input id="btRate" type="number" step="0.5" style="width:80px"></label>
+    <label style="font-size:12px;color:#7d8590">Corporate tax %<input id="ctRate" type="number" step="0.5" style="width:80px"></label>
+    <button id="taxSave">Save rates</button>
+  </div>
+  <div class="card" id="marginCalc" style="margin-top:10px"></div>
+  <p style="color:#7d8590;font-size:12px">Withholding tax is deducted from the player's winnings and remitted to KRA — it is not your revenue. Rates change; confirm current figures with your accountant. Turning WHT off while the law requires it is tax evasion.</p>
+
+  <h2 class="row" style="justify-content:space-between">PesaLink requests (pay from your bank, then mark paid)</h2>
+  <div class="scroll"><table id="pl"><thead><tr><th>Ref</th><th>Player</th><th>Nat. ID</th><th>Amount</th><th>Bank</th><th>Account</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+
   <h2>Profit per day (live spins only)</h2>
-  <div class="scroll"><table id="daily"><thead><tr><th>Date</th><th>Spins</th><th>Staked</th><th>Paid out</th><th>Profit</th><th>Margin</th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll"><table id="daily"><thead><tr><th>Date</th><th>Spins</th><th>Staked</th><th>Paid out</th><th>Gross profit</th><th>Marketing</th><th>After spend</th><th>Margin</th></tr></thead><tbody></tbody></table></div>
 
   <h2>Players</h2>
   <div class="row"><input id="q" placeholder="Search email" style="flex:1"><button id="searchBtn">Search</button></div>
@@ -241,7 +379,7 @@ async function login(){
 async function show(){
   document.getElementById("login").style.display="none";
   document.getElementById("panel").style.display="block";
-  await refresh();loadPlayers();loadTx();
+  await refresh();loadPlayers();loadTx();loadPesalink();loadExpenses();
 }
 
 async function refresh(){
@@ -255,7 +393,10 @@ async function refresh(){
     ["Withdrawals (all-time)",K(s.withdrawals.total)],
     ["Player balances (liability)",K(s.player_balances)],
     ["Pending payouts",s.pending_withdrawals.count+" / "+K(s.pending_withdrawals.total)],
-    ["Jackpot pool",K(s.jackpot_pool)]
+    ["Jackpot pool",K(s.jackpot_pool)],
+    ["WHT collected (owed to KRA)",K(s.wht_collected)],
+    ["PesaLink pending",s.pesalink_pending.count+" / "+K(s.pesalink_pending.total)],
+    ["Marketing & expenses",K(s.expenses_total)]
   ].map(function(row){
     var l=row[0],v=row[1],c=row[2];
     return '<div class="card"><small>'+l+'</small><b class="'+(c||"")+'">'+v+"</b></div>";
@@ -263,7 +404,9 @@ async function refresh(){
 
   document.getElementById("daily").tBodies[0].innerHTML=s.daily.map(function(d){
     return "<tr><td>"+d.date+"</td><td>"+d.spins+"</td><td>"+K(d.staked)+"</td><td>"+K(d.paid)+
-      '</td><td class="'+(d.profit>=0?"pos":"neg")+'">'+K(d.profit)+"</td><td>"+
+      '</td><td class="'+(d.profit>=0?"pos":"neg")+'">'+K(d.profit)+"</td>"+
+      "<td>"+(d.marketing?K(d.marketing):"—")+"</td>"+
+      '<td class="'+(d.net>=0?"pos":"neg")+'">'+K(d.net)+"</td><td>"+
       (d.staked?Math.round(100*d.profit/d.staked)+"%":"—")+"</td></tr>";
   }).join("");
 
@@ -276,6 +419,103 @@ async function refresh(){
   var btnWd=document.getElementById("btnWd");
   btnWd.textContent=S.withdrawals_enabled?"Pause withdrawals":"Resume withdrawals";
   btnWd.className=S.withdrawals_enabled?"danger":"on";
+
+  var btnWht=document.getElementById("btnWht");
+  btnWht.textContent=S.wht_enabled?"WHT ON — charging":"WHT OFF — not charging";
+  btnWht.className=S.wht_enabled?"on":"danger";
+  document.getElementById("whtRate").value=S.wht_rate;
+  document.getElementById("exRate").value=S.excise_rate;
+  document.getElementById("btRate").value=S.betting_tax_rate;
+  document.getElementById("ctRate").value=S.corp_tax_rate;
+  var rtpEl=document.getElementById("rtpInput");
+  if(document.activeElement!==rtpEl) rtpEl.value=S.target_rtp;
+  document.getElementById("rtpMargin").innerHTML=
+    "= house margin <b class='pos'>"+(100-Number(S.target_rtp)).toFixed(1)+"%</b>";
+  drawMargin(s);
+}
+
+
+function drawMargin(s){
+  var ex=Number(S.excise_rate)||0, bt=Number(S.betting_tax_rate)||0, ct=Number(S.corp_tax_rate)||0;
+  var ggr=100-Number(S.target_rtp);
+  var exAmt=ex;                 // per KSh 100 staked, excise is charged on the stake
+  var btAmt=bt*ggr/100;
+  var pre=ggr-exAmt-btAmt;
+  var net=pre*(1-ct/100);
+  var realised=s.daily[0]&&s.daily[0].staked?Math.round(100*s.daily[0].profit/s.daily[0].staked):null;
+  document.getElementById("marginCalc").innerHTML=
+    "<small>Per KSh 100 staked, at "+ggr+"% gross margin</small>"+
+    "<div style='font-size:13px;line-height:1.9;margin-top:6px'>"+
+    "Gross gaming revenue: <b>KSh "+ggr.toFixed(2)+"</b><br>"+
+    "&minus; excise on stakes ("+ex+"%): KSh "+exAmt.toFixed(2)+"<br>"+
+    "&minus; betting tax ("+bt+"% of GGR): KSh "+btAmt.toFixed(2)+"<br>"+
+    "= pre-tax profit: KSh "+pre.toFixed(2)+"<br>"+
+    "&minus; corporate tax ("+ct+"%): KSh "+(pre*ct/100).toFixed(2)+"<br>"+
+    "<b class='"+(net>=30?"pos":"neg")+"' style='font-size:16px'>Net profit: KSh "+net.toFixed(2)+" ("+net.toFixed(1)+"%)</b>"+
+    (realised!==null?"<br><small style='color:#7d8590'>Today's realised gross margin: "+realised+"%</small>":"")+
+    "</div>";
+}
+
+async function saveTax(){
+  await api("/settings",{
+    wht_rate:Number(document.getElementById("whtRate").value),
+    excise_rate:Number(document.getElementById("exRate").value),
+    betting_tax_rate:Number(document.getElementById("btRate").value),
+    corp_tax_rate:Number(document.getElementById("ctRate").value)});
+  refresh();
+}
+
+async function saveRtp(){
+  var v=Number(document.getElementById("rtpInput").value);
+  if(!(v>=8&&v<=90)){alert("Payout rate must be between 8% and 90%.");return}
+  if(!confirm("Set player payout to "+v+"% (house margin "+(100-v).toFixed(1)+"%)?\n\nThis changes the odds from the next spin and is recorded in the change log."))return;
+  await api("/settings",{target_rtp:v});refresh();loadAudit();
+}
+async function loadAudit(){
+  var a=await api("/audit");
+  document.getElementById("audit").tBodies[0].innerHTML=a.map(function(x){
+    return "<tr><td>"+new Date(Number(x.created)).toLocaleString()+"</td><td>"+x.key+
+      "</td><td>"+(x.old_value===null?"—":x.old_value)+"</td><td>"+x.new_value+"</td></tr>";
+  }).join("");
+}
+async function loadExpenses(){
+  var e=await api("/expenses");
+  document.getElementById("exp").tBodies[0].innerHTML=e.rows.map(function(x){
+    return "<tr><td>"+new Date(Number(x.created)).toLocaleDateString()+"</td><td>"+x.category+
+      "</td><td>"+K(x.amount)+"</td><td>"+(x.note||"")+
+      '</td><td><button class="expdel" data-id="'+x.id+'">Delete</button></td></tr>';
+  }).join("");
+  document.querySelectorAll(".expdel").forEach(function(b){
+    b.onclick=async function(){ if(!confirm("Delete this entry?"))return;
+      await api("/expenses/"+b.dataset.id+"/delete",{});loadExpenses();refresh(); };
+  });
+}
+async function addExpense(){
+  var amt=Number(document.getElementById("expAmt").value);
+  if(!(amt>0)){alert("Enter an amount.");return}
+  await api("/expenses",{amount:amt,category:document.getElementById("expCat").value,
+    note:document.getElementById("expNote").value});
+  document.getElementById("expAmt").value="";document.getElementById("expNote").value="";
+  loadExpenses();refresh();
+}
+async function loadPesalink(){
+  var p=await api("/pesalink");
+  document.getElementById("pl").tBodies[0].innerHTML=p.map(function(x){
+    var act=x.status==="requested"
+      ? '<button class="plbtn on" data-ref="'+x.ref+'" data-a="paid">Mark paid</button> '+
+        '<button class="plbtn danger" data-ref="'+x.ref+'" data-a="reject">Reject &amp; refund</button>'
+      : "";
+    return "<tr><td>"+x.ref.slice(0,10)+"</td><td>"+(x.full_name||"—")+"</td><td>"+(x.id_number||"—")+
+      "</td><td>"+K(x.amount)+"</td><td>"+(x.bank||"")+"</td><td>"+(x.account||"")+
+      "</td><td>"+x.status+"</td><td>"+act+"</td></tr>";
+  }).join("");
+  document.querySelectorAll(".plbtn").forEach(function(b){
+    b.onclick=async function(){
+      if(b.dataset.a==="reject"&&!confirm("Reject and refund this request?"))return;
+      await api("/pesalink/"+b.dataset.ref,{action:b.dataset.a});
+      loadPesalink();refresh();
+    };
+  });
 }
 
 async function toggle(k){
@@ -331,6 +571,17 @@ async function loadTx(){
 document.getElementById("loginBtn").onclick=login;
 document.getElementById("btnMode").onclick=function(){toggle("live_mode")};
 document.getElementById("btnWd").onclick=function(){toggle("withdrawals_enabled")};
+document.getElementById("btnWht").onclick=function(){
+  if(S.wht_enabled&&!confirm("Stop deducting withholding tax?\n\nOnly do this if the law no longer requires it — withholding when required is a legal obligation."))return;
+  api("/settings",{wht_enabled:!S.wht_enabled}).then(refresh);
+};
+document.getElementById("taxSave").onclick=saveTax;
+document.getElementById("rtpSave").onclick=saveRtp;
+document.getElementById("expAdd").onclick=addExpense;
+document.getElementById("auditBtn").onclick=function(){
+  var w=document.getElementById("auditWrap");
+  if(w.style.display==="none"){w.style.display="block";loadAudit();}else{w.style.display="none";}
+};
 document.getElementById("jpBtn").onclick=setJackpot;
 document.getElementById("searchBtn").onclick=loadPlayers;
 document.getElementById("q").addEventListener("keydown",function(e){if(e.key==="Enter")loadPlayers();});
