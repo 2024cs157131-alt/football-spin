@@ -648,7 +648,8 @@ async function settle(user, bets, stake, live, st, freeSpin) {
     await client.query("COMMIT");
   } catch (e) {
     await client.query("ROLLBACK"); client.release();
-    throw new Error("Insufficient balance. Deposit to play.");
+    throw new Error(live ? "Insufficient balance. Deposit to play."
+                         : "Not enough demo credit for that stake.");
   }
   client.release();
   return { key: hit.key, slot, payout: netPayout, tax: taxTaken,
@@ -677,7 +678,9 @@ app.post("/api/spin", auth, async (req, res) => {
     req.user.demo_balance = DEMO_BANKROLL;
   }
   const curBal = live ? req.user.balance : Number(req.user.demo_balance);
-  if (stake > curBal) return res.status(400).json({ error: "Insufficient balance. Deposit to play." });
+  if (stake > curBal) return res.status(400).json({
+    error: live ? "Insufficient balance. Deposit to play."
+                : "Not enough demo credit for that stake." });
 
   let out;
   try { out = await settle(req.user, bets, stake, live, st, false); }
