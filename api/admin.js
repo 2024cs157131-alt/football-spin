@@ -18,7 +18,8 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
    * by one factor and a secret URL, so it is materially weaker: set a new
    * ADMIN_TOTP_SECRET, re-add it to your authenticator, then DELETE this
    * variable. The lockout window is also tightened while it is on. */
-  const TOTP_DISABLED = String(process.env.ADMIN_TOTP_DISABLED || "").toLowerCase() === "true";
+  const TOTP_DISABLED = ["true", "1", "yes", "on"]
+    .includes(String(process.env.ADMIN_TOTP_DISABLED || "").trim().toLowerCase());
 
   if (!ADMIN_PATH || !ADMIN_PASSWORD || (!ADMIN_TOTP_SECRET && !TOTP_DISABLED)) {
     console.warn("Admin panel disabled: set ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET " +
@@ -161,6 +162,11 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
       });
     }
 
+    if (!process.env.APP_SECRET)
+      return res.status(500).json({
+        error: "APP_SECRET is not set on the server, so no session can be created. " +
+               "Add it in Vercel → Environment Variables and redeploy." });
+
     // A good login clears the slate, so earlier typos can't lock you out later.
     await clearAttempts(ip);
     const ttl = TOTP_DISABLED ? 15 * 60 * 1000 : 60 * 60 * 1000;
@@ -169,6 +175,41 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
 
   /* Clock check: compare your phone against the server so drift is obvious.
    * Returns no secrets and needs no auth. */
+  /* Diagnostics — reports configuration state and DB health without ever
+   * revealing a secret value. Safe to open in a browser while debugging. */
+  app.get(`${P}/diag`, async (_req, res) => {
+    const out = {
+      admin_path_set: !!ADMIN_PATH,
+      admin_password_set: !!ADMIN_PASSWORD,
+      admin_password_length: ADMIN_PASSWORD ? String(ADMIN_PASSWORD).length : 0,
+      totp_secret_set: !!ADMIN_TOTP_SECRET,
+      totp_disabled: TOTP_DISABLED,
+      app_secret_set: !!process.env.APP_SECRET,
+      app_secret_length: process.env.APP_SECRET ? String(process.env.APP_SECRET).length : 0,
+      database_url_set: !!process.env.DATABASE_URL,
+      server_time: new Date().toISOString(),
+    };
+    // can we sign a token? this is the step that silently killed logins when
+    // APP_SECRET was missing
+    try { sign({ test: 1 }); out.token_signing = "ok"; }
+    catch (e) { out.token_signing = "FAILED: " + e.message; }
+    // is the database reachable, and does the attempts table exist?
+    try {
+      await pool.query("SELECT 1");
+      out.database = "ok";
+      const t = await pool.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_name='admin_attempts'`);
+      out.admin_attempts_columns = t.rows.map(r => r.column_name);
+    } catch (e) { out.database = "FAILED: " + e.message; }
+
+    out.verdict = (!out.admin_password_set ? "ADMIN_PASSWORD is not set — login cannot succeed."
+      : !out.app_secret_set ? "APP_SECRET is not set — login cannot issue a session."
+      : out.token_signing !== "ok" ? "Token signing is broken — see token_signing."
+      : String(out.database).startsWith("FAILED") ? "Database unreachable — see database."
+      : "Configuration looks complete. If login still fails, the password is wrong.");
+    res.json(out);
+  });
+
   app.get(`${P}/time`, (_req, res) => {
     res.json({ server_time: new Date().toISOString(), epoch_ms: Date.now(),
                totp_step: Math.floor(Date.now() / 30000), totp_disabled: TOTP_DISABLED });
@@ -402,7 +443,15 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
   /* ----- the panel itself (served only at the secret URL) ----- */
   app.get(`${P}/panel`, (_req, res) => {
     res.setHeader("X-Robots-Tag", "noindex, nofollow");
-    res.type("html").send(PANEL_HTML.replaceAll("__BASE__", P));
+    let html = PANEL_HTML.replaceAll("__BASE__", P);
+    if (TOTP_DISABLED) {
+      // render the login form without the authenticator field at all
+      html = html.replace(
+        '<input id="code" inputmode="numeric" placeholder="Authenticator code" maxlength="6">',
+        '<input id="code" type="hidden" value="">');
+    }
+    res.setHeader("Cache-Control", "no-store");   // never serve a stale panel
+    res.type("html").send(html);
   });
 };
 
@@ -434,6 +483,10 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   <div class="err" id="lerr"></div>
   <div id="clockWarn" style="display:none;font-size:12px;color:#d29922;background:#1c1500;border:1px solid #4a3800;border-radius:8px;padding:8px;margin-bottom:8px"></div>
   <button class="on" style="width:100%" id="loginBtn">Sign in</button>
+  <button id="diagBtn" style="width:100%;margin-top:8px;font-size:12px">Run diagnostics</button>
+  <pre id="diagOut" style="display:none;white-space:pre-wrap;word-break:break-word;font-size:11px;
+    background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:10px;margin-top:8px;
+    max-height:260px;overflow:auto"></pre>
 </div>
 <div id="panel" style="display:none">
   <div class="row" style="justify-content:space-between"><h1>Operator console</h1>
@@ -511,6 +564,15 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   <div class="scroll"><table id="tx"><thead><tr><th>ID</th><th>Player</th><th>Kind</th><th>Amount</th><th>Status</th><th>Phone</th><th>When</th></tr></thead><tbody></tbody></table></div>
 </div>
 <script>
+/* Nothing should ever fail invisibly on this screen. */
+window.addEventListener("error", function(ev){ showFatal(ev.message + (ev.filename?" ("+ev.lineno+")":"")); });
+window.addEventListener("unhandledrejection", function(ev){
+  showFatal("Unhandled: " + ((ev.reason && ev.reason.message) || ev.reason));
+});
+function showFatal(msg){
+  var box = document.getElementById("lerr");
+  if(box){ box.textContent = "Script error: " + msg; }
+}
 const B="__BASE__"; let T=sessionStorage.getItem("adm")||null; let S={};
 const K=c=>"KSh "+(c/100).toLocaleString("en-KE");
 const api=async(p,b)=>{
@@ -805,6 +867,23 @@ async function loadTx(){
 
 checkMode();
 document.getElementById("loginBtn").onclick=login;
+document.getElementById("diagBtn").onclick=async function(){
+  var out=document.getElementById("diagOut");
+  out.style.display="block"; out.textContent="Checking\u2026";
+  try{
+    var r=await fetch(B+"/diag");
+    var txt=await r.text();
+    try{
+      var d=JSON.parse(txt);
+      out.textContent = "VERDICT: " + d.verdict + "\n\n" + JSON.stringify(d,null,2);
+    }catch(e){
+      out.textContent = "Server returned non-JSON (HTTP "+r.status+"):\n\n"+txt.slice(0,600);
+    }
+  }catch(e){
+    out.textContent = "Could not reach the server: " + e.message +
+      "\n\nCheck the admin path in the URL matches ADMIN_PATH exactly.";
+  }
+};
 ["pw","code"].forEach(function(id){
   document.getElementById(id).addEventListener("keydown",function(e){ if(e.key==="Enter") login(); });
 });
