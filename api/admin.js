@@ -1,595 +1,670 @@
-/**
- * Admin panel — mounted by api/index.js.
- * Security layers:
- *  1. Secret URL slug (ADMIN_PATH env) — the panel is not linked or discoverable anywhere.
- *  2. Password (constant-time compare) + TOTP 2FA from an authenticator app.
- *  3. Login rate limiting stored in Postgres (works across serverless instances).
- *  4. Short-lived signed admin sessions (60 min).
- * Env: ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET (base32)
- */
-const crypto = require("crypto");
-
-module.exports = function mountAdmin(app, pool, sign, verify) {
-  const { ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET } = process.env;
-  if (!ADMIN_PATH || !ADMIN_PASSWORD || !ADMIN_TOTP_SECRET) {
-    console.warn("Admin panel disabled: set ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET");
-    return;
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Safari Spin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cab-red:#7d0f12; --cab-deep:#3f0608; --panel:#160b0b;
+    --led:#ff3b30; --led-dim:#3a0d0b; --gold:#f3c440; --pitch:#2fae5e;
+    --lamp:#fff6d8; --ink:#f5efe6;
   }
-
-  /* ----- TOTP (RFC 6238, no dependencies) ----- */
-  function b32decode(str) {
-    const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let bits = "", out = [];
-    for (const c of str.toUpperCase().replace(/=+$/, "")) {
-      const v = A.indexOf(c); if (v < 0) continue;
-      bits += v.toString(2).padStart(5, "0");
-    }
-    for (let i = 0; i + 8 <= bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8), 2));
-    return Buffer.from(out);
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    font-family:Barlow,system-ui,sans-serif;color:var(--ink);
+    background:
+      radial-gradient(120% 70% at 50% 0%, #a3181c 0%, var(--cab-red) 45%, var(--cab-deep) 100%);
+    min-height:100dvh;padding-bottom:calc(70px + env(safe-area-inset-bottom));
   }
-  function totp(secret, offset = 0) {
-    const counter = Math.floor(Date.now() / 30000) + offset;
-    const buf = Buffer.alloc(8); buf.writeBigUInt64BE(BigInt(counter));
-    const h = crypto.createHmac("sha1", b32decode(secret)).update(buf).digest();
-    const o = h[h.length - 1] & 0xf;
-    const code = ((h[o] & 0x7f) << 24 | h[o + 1] << 16 | h[o + 2] << 8 | h[o + 3]) % 1e6;
-    return String(code).padStart(6, "0");
+  header{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:8px 12px 2px;
   }
-  const totpOk = code => [-1, 0, 1].some(w => {
-    try { return crypto.timingSafeEqual(Buffer.from(totp(ADMIN_TOTP_SECRET, w)), Buffer.from(String(code || "").padStart(6, "0"))); }
-    catch { return false; }
-  });
-  const pwOk = pw => {
-    const a = crypto.createHash("sha256").update(String(pw || "")).digest();
-    const b = crypto.createHash("sha256").update(ADMIN_PASSWORD).digest();
-    return crypto.timingSafeEqual(a, b);
-  };
+  h1{font-family:'Russo One';font-size:clamp(14px,4.2vw,18px);letter-spacing:1px;color:var(--gold);
+     text-shadow:0 2px 0 #5c3a00}
+  .age{font-size:11px;border:1.5px solid var(--gold);border-radius:50%;
+       width:24px;height:24px;display:grid;place-items:center;color:var(--gold);font-weight:600}
 
-  /* ----- rate limiting (DB-backed, survives serverless cold starts) ----- */
-  async function throttled() {
-    const cutoff = Date.now() - 10 * 60 * 1000;
-    await pool.query("DELETE FROM admin_attempts WHERE ts < $1", [cutoff]);
-    const r = await pool.query("SELECT COUNT(*) c FROM admin_attempts WHERE ts >= $1", [cutoff]);
-    return Number(r.rows[0].c) >= 8; // max 8 attempts per 10 minutes, global
-  }
+  /* LED scoreboard */
+  .boards{display:flex;gap:8px;padding:4px 12px}
+  .board{flex:1;background:var(--panel);border:2px solid var(--gold);border-radius:10px;
+         padding:4px 8px;box-shadow:inset 0 0 18px #000}
+  .board small{display:block;font-family:'Russo One';font-size:10px;color:#ff7ab5;letter-spacing:2px}
+  .board b{font-variant-numeric:tabular-nums;font-family:'Russo One';font-size:clamp(15px,4.6vw,19px);color:var(--led);
+           text-shadow:0 0 8px rgba(255,59,48,.8)}
 
-  function adminAuth(req, res, next) {
-    const t = verify((req.headers.authorization || "").replace("Bearer ", ""));
-    if (!t || t.role !== "admin" || t.exp < Date.now())
-      return res.status(401).json({ error: "Session expired. Log in again." });
-    next();
-  }
+  /* wheel */
+  .wheel-wrap{position:relative;width:min(74vw,min(300px,34vh));aspect-ratio:1;margin:8px auto}
+  .hub{position:absolute;inset:15%;border-radius:50%;
+       background:radial-gradient(circle at 35% 30%, #2a1414, #0d0505 70%);
+       border:3px solid var(--gold);display:grid;place-items:center;box-shadow:0 0 40px rgba(0,0,0,.6)}
+  .hub .num{font-family:'Russo One';font-size:clamp(24px,8vw,36px);color:var(--led);text-shadow:0 0 12px rgba(255,59,48,.9)}
+  .hub .msg{font-size:clamp(9px,2.7vw,11px);color:#e8b7b7;margin-top:2px;min-height:15px;text-align:center;padding:0 14px}
+  .slot{position:absolute;width:13.5%;aspect-ratio:1;border-radius:50%;
+        display:grid;place-items:center;font-family:'Russo One';font-size:10px;
+        border:2px solid #cfe6ff;color:#fff;transform:translate(-50%,-50%);
+        box-shadow:0 2px 4px rgba(0,0,0,.5);transition:box-shadow .1s, filter .1s;overflow:hidden}
+  .slot.lit{box-shadow:0 0 0 4px var(--lamp), 0 0 22px 6px var(--lamp);filter:brightness(1.25)}
+  .slot.lit-gold{box-shadow:0 0 0 4px #ffd54a, 0 0 26px 8px #ffb300;filter:brightness(1.4)}
+  .slot.lit-purple{box-shadow:0 0 0 4px #d18aff, 0 0 26px 8px #8e24aa;filter:brightness(1.35)}
+  .slot.lit-green{box-shadow:0 0 0 4px #7bffa8, 0 0 24px 7px #14a44d;filter:brightness(1.3)}
+  .slot em{font-style:normal;font-size:7px;display:block;text-align:center;line-height:1}
 
-  const P = `/api/admin/${ADMIN_PATH}`;
+  /* bet panel */
+  .bets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:0 12px;margin-top:4px}
+  .bet{background:var(--panel);border:2px solid #5a4a1c;border-radius:9px;padding:5px 2px 4px;
+       text-align:center;position:relative}
+  .bet.active{border-color:var(--gold);box-shadow:0 0 12px rgba(243,196,64,.45)}
+  .bet .dot{width:clamp(22px,7vw,28px);height:clamp(22px,7vw,28px);border-radius:50%;margin:0 auto 4px;display:grid;place-items:center;
+            font-family:'Russo One';font-size:7px;color:#fff;border:2px solid #fff3;overflow:hidden}
+  .bet small{display:block;font-size:9px;color:#ffb0d5}
+  .bet b{font-family:'Russo One';font-size:clamp(11px,3.3vw,13px);color:var(--led)}
+  .bet .amt{font-size:10px;color:var(--gold);min-height:14px}
 
-  /* ----- login ----- */
-  app.post(`${P}/login`, async (req, res) => {
-    if (await throttled()) return res.status(429).json({ error: "Too many attempts. Wait 10 minutes." });
-    const { password, code } = req.body || {};
-    if (!pwOk(password) || !totpOk(code)) {
-      await pool.query("INSERT INTO admin_attempts(ts) VALUES($1)", [Date.now()]);
-      return res.status(401).json({ error: "Wrong password or code." });
-    }
-    res.json({ token: sign({ role: "admin", exp: Date.now() + 60 * 60 * 1000 }) });
-  });
+  /* controls */
+  .bar{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(#241010,#120707);
+       border-top:2px solid var(--gold);padding:7px 12px calc(7px + env(safe-area-inset-bottom));
+       display:flex;gap:8px}
+  button{font-family:'Russo One';border:none;border-radius:11px;padding:10px 0;font-size:13px;
+         color:#241300;background:linear-gradient(#ffe08a,var(--gold));flex:1;
+         box-shadow:0 3px 0 #8a6a12;cursor:pointer}
+  button:active{transform:translateY(2px);box-shadow:0 1px 0 #8a6a12}
+  button.red{background:linear-gradient(#ff6b5e,#d92c20);color:#fff;box-shadow:0 3px 0 #7a140d}
+  button.ghost{background:transparent;color:var(--gold);border:2px solid var(--gold);box-shadow:none}
+  button:disabled{opacity:.5}
+  .chips{display:flex;gap:6px;justify-content:center;margin:6px 12px 0}
+  .chip{flex:0 0 auto;width:52px;padding:6px 0;border-radius:999px;font-size:13px}
+  .chip.sel{outline:3px solid #fff}
 
-  /* ----- dashboard stats ----- */
-  app.get(`${P}/stats`, adminAuth, async (_req, res) => {
-    const [users, dep, wd, daily, jack, st, pend, taxq, plq, expDaily, expAll] = await Promise.all([
-      pool.query("SELECT COUNT(*) c, COALESCE(SUM(balance),0) bal FROM users"),
-      pool.query("SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM tx WHERE kind='deposit' AND status='success'"),
-      pool.query("SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM tx WHERE kind='withdraw' AND status='success'"),
-      pool.query(`SELECT to_char(to_timestamp(created/1000),'YYYY-MM-DD') d,
-        COALESCE(SUM(stake),0) staked, COALESCE(SUM(payout),0) paid, COUNT(*) spins
-        FROM spins WHERE demo=false GROUP BY d ORDER BY d DESC LIMIT 14`),
-      pool.query("SELECT pool FROM jackpot WHERE id=1"),
-      pool.query("SELECT key,value FROM settings"),
-      pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='withdraw' AND status IN ('pending','sending')"),
-      pool.query("SELECT COALESCE(SUM(tax),0) t FROM spins WHERE demo=false"),
-      pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='pesalink' AND status='requested'"),
-      pool.query(`SELECT to_char(to_timestamp(created/1000),'YYYY-MM-DD') d, COALESCE(SUM(amount),0) s
-                  FROM expenses GROUP BY d ORDER BY d DESC LIMIT 30`),
-      pool.query("SELECT COALESCE(SUM(amount),0) s FROM expenses"),
-    ]);
-    const BK = ["live_mode","withdrawals_enabled","wht_enabled"];
-    const settings = {}; st.rows.forEach(x => settings[x.key] = BK.includes(x.key) ? x.value === "true" : Number(x.value));
-    res.json({
-      players: Number(users.rows[0].c),
-      player_balances: Number(users.rows[0].bal),        // your liability to players
-      deposits: { total: Number(dep.rows[0].s), count: Number(dep.rows[0].c) },
-      withdrawals: { total: Number(wd.rows[0].s), count: Number(wd.rows[0].c) },
-      pending_withdrawals: { count: Number(pend.rows[0].c), total: Number(pend.rows[0].s) },
-      daily: (function () {
-        const spend = {}; expDaily.rows.forEach(r => spend[r.d] = Number(r.s));
-        return daily.rows.map(r => {
-          const gross = Number(r.staked) - Number(r.paid);
-          const mk = spend[r.d] || 0;
-          return { date: r.d, staked: Number(r.staked), paid: Number(r.paid),
-            profit: gross, marketing: mk, net: gross - mk, spins: Number(r.spins) };
-        });
-      })(),
-      expenses_total: Number(expAll.rows[0].s),
-      jackpot_pool: Number(jack.rows[0]?.pool || 0),
-      wht_collected: Number(taxq.rows[0].t),
-      pesalink_pending: { count: Number(plq.rows[0].c), total: Number(plq.rows[0].s) },
-      settings,
-    });
-  });
+  /* sheets */
+  .sheet{position:fixed;inset:0;background:rgba(10,3,3,.72);display:none;place-items:end center;z-index:9}
+  .sheet.open{display:grid}
+  .card{background:#1d0e0e;border:2px solid var(--gold);border-radius:18px 18px 0 0;width:100%;
+        max-width:480px;padding:16px 16px calc(16px + env(safe-area-inset-bottom));max-height:92dvh;overflow-y:auto}
+  .card h2{font-family:'Russo One';color:var(--gold);font-size:16px;margin-bottom:12px}
+  .card label{font-size:11px;color:#e6c9c9;display:block;margin:7px 0 3px}
+  .card input,.card select{width:100%;padding:10px;border-radius:10px;border:1.5px solid #5a4a1c;
+        background:#0e0606;color:var(--ink);font-size:15px}
+  .card .err{color:#ff8a80;font-size:13px;min-height:16px;margin-top:8px}
+  .rg{font-size:11px;color:#caa;text-align:center;margin-top:14px;line-height:1.5}
+  .rg a{color:var(--gold)}
+  .soundbtn{position:absolute;right:16px;top:52px;background:none;border:none;box-shadow:none;
+            color:var(--gold);font-size:18px;width:auto;flex:0;padding:0;cursor:pointer}
+</style>
+</head>
+<body>
+<header>
+  <h1>SAFARI SPIN</h1>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span id="soundToggle" style="cursor:pointer;font-size:18px;color:var(--gold)">&#128266;</span>
+    <span id="modeBadge" style="display:none;font-family:'Russo One';font-size:10px;background:#9e6a03;color:#fff;padding:3px 10px;border-radius:999px">DEMO</span>
+    <div class="age">18+</div>
+  </div>
+</header>
 
-  /* ----- players ----- */
-  app.get(`${P}/players`, adminAuth, async (req, res) => {
-    const q = String(req.query.q || "").trim();
-    const r = await pool.query(`
-      SELECT u.id, u.email, u.full_name, u.id_number, u.id_verified, u.phone, u.phone_verified, u.balance, u.suspended, u.created,
-        COALESCE((SELECT SUM(amount) FROM tx WHERE user_id=u.id AND kind='deposit' AND status='success'),0) deposited,
-        COALESCE((SELECT SUM(amount) FROM tx WHERE user_id=u.id AND kind='withdraw' AND status='success'),0) withdrawn,
-        COALESCE((SELECT SUM(stake)-SUM(payout) FROM spins WHERE user_id=u.id AND demo=false),0) net_lost
-      FROM users u ${q ? "WHERE u.email ILIKE $1 OR u.phone ILIKE $1 OR u.full_name ILIKE $1 OR u.id_number ILIKE $1" : ""}
-      ORDER BY u.id DESC LIMIT 100`, q ? [`%${q}%`] : []);
-    res.json(r.rows.map(x => ({ ...x, balance: Number(x.balance), deposited: Number(x.deposited),
-      withdrawn: Number(x.withdrawn), net_lost: Number(x.net_lost) })));
-  });
-
-  app.post(`${P}/players/:id/suspend`, adminAuth, async (req, res) => {
-    await pool.query("UPDATE users SET suspended=$2 WHERE id=$1", [req.params.id, !!req.body.suspended]);
-    res.json({ ok: true });
-  });
-
-  app.post(`${P}/players/:id/idverify`, adminAuth, async (req, res) => {
-    await pool.query("UPDATE users SET id_verified=$2 WHERE id=$1", [req.params.id, !!req.body.verified]);
-    res.json({ ok: true });
-  });
-
-  /* ----- switches ----- */
-  const BOOL_KEYS = ["live_mode", "withdrawals_enabled", "wht_enabled"];
-  const NUM_KEYS = ["wht_rate", "wht_threshold", "excise_rate", "betting_tax_rate", "corp_tax_rate", "target_rtp"];
-
-  app.post(`${P}/settings`, adminAuth, async (req, res) => {
-    for (const k of BOOL_KEYS) {
-      if (k in (req.body || {}))
-        await pool.query("UPDATE settings SET value=$2 WHERE key=$1", [k, String(!!req.body[k])]);
-    }
-    for (const k of NUM_KEYS) {
-      if (k in (req.body || {})) {
-        const v = Number(req.body[k]);
-        if (!(v >= 0)) return res.status(400).json({ error: "Rates must be zero or higher." });
-        if (k === "target_rtp" && (v < 8 || v > 90))
-          return res.status(400).json({ error: "Payout rate must be between 8% and 90%." });
-        const prev = (await pool.query("SELECT value FROM settings WHERE key=$1", [k])).rows[0];
-        if (!prev || prev.value !== String(v)) {
-          await pool.query("UPDATE settings SET value=$2 WHERE key=$1", [k, String(v)]);
-          await pool.query(
-            "INSERT INTO settings_audit(key,old_value,new_value,created) VALUES($1,$2,$3,$4)",
-            [k, prev ? prev.value : null, String(v), Date.now()]);
-        }
-      }
-    }
-    const r = await pool.query("SELECT key,value FROM settings");
-    const o = {}; r.rows.forEach(x => o[x.key] = BOOL_KEYS.includes(x.key) ? x.value === "true" : Number(x.value));
-    res.json(o);
-  });
-
-  /* ----- marketing & other spend ----- */
-  app.get(`${P}/expenses`, adminAuth, async (_req, res) => {
-    const [rows, totals, month] = await Promise.all([
-      pool.query("SELECT * FROM expenses ORDER BY id DESC LIMIT 50"),
-      pool.query("SELECT category, COALESCE(SUM(amount),0) s FROM expenses GROUP BY category"),
-      pool.query("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE created >= $1",
-        [Date.now() - 30 * 864e5]),
-    ]);
-    res.json({
-      rows: rows.rows.map(x => ({ ...x, amount: Number(x.amount) })),
-      by_category: totals.rows.map(x => ({ category: x.category, total: Number(x.s) })),
-      last_30_days: Number(month.rows[0].s),
-    });
-  });
-
-  app.post(`${P}/expenses`, adminAuth, async (req, res) => {
-    const cents = Math.round(Number(req.body.amount) * 100);
-    const category = String(req.body.category || "marketing").slice(0, 40);
-    const note = String(req.body.note || "").slice(0, 200);
-    if (!(cents > 0)) return res.status(400).json({ error: "Enter an amount." });
-    await pool.query("INSERT INTO expenses(category,amount,note,created) VALUES($1,$2,$3,$4)",
-      [category, cents, note, Date.now()]);
-    res.json({ ok: true });
-  });
-
-  app.post(`${P}/expenses/:id/delete`, adminAuth, async (req, res) => {
-    await pool.query("DELETE FROM expenses WHERE id=$1", [req.params.id]);
-    res.json({ ok: true });
-  });
-
-  app.get(`${P}/audit`, adminAuth, async (_req, res) => {
-    const r = await pool.query("SELECT * FROM settings_audit ORDER BY id DESC LIMIT 30");
-    res.json(r.rows);
-  });
-
-  /* ----- PesaLink queue (large withdrawals, paid manually from your bank) ----- */
-  app.get(`${P}/pesalink`, adminAuth, async (_req, res) => {
-    const r = await pool.query(
-      `SELECT t.id, t.user_id, t.amount, t.ref, t.status, t.phone, t.bank, t.account, t.created,
-              u.full_name, u.id_number
-       FROM tx t JOIN users u ON u.id=t.user_id
-       WHERE t.kind='pesalink' ORDER BY (t.status='requested') DESC, t.id DESC LIMIT 50`);
-    res.json(r.rows.map(x => ({ ...x, amount: Number(x.amount) })));
-  });
-
-  app.post(`${P}/pesalink/:ref`, adminAuth, async (req, res) => {
-    const action = String(req.body.action || "");
-    const t = (await pool.query("SELECT * FROM tx WHERE ref=$1 AND kind='pesalink'", [req.params.ref])).rows[0];
-    if (!t || t.status !== "requested") return res.status(400).json({ error: "Request already handled." });
-    if (action === "paid") {
-      await pool.query("UPDATE tx SET status='success' WHERE id=$1", [t.id]);
-    } else if (action === "reject") {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query("UPDATE tx SET status='failed' WHERE id=$1", [t.id]);
-        await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [t.user_id, Number(t.amount)]);
-        await client.query("COMMIT");
-      } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
-    } else return res.status(400).json({ error: "Unknown action." });
-    res.json({ ok: true });
-  });
-
-  app.post(`${P}/jackpot`, adminAuth, async (req, res) => {
-    const cents = Math.floor(Number(req.body.pool));
-    if (!(cents >= 0)) return res.status(400).json({ error: "Invalid amount." });
-    await pool.query("UPDATE jackpot SET pool=$1 WHERE id=1", [cents]);
-    res.json({ ok: true, pool: cents });
-  });
-
-  /* ----- transactions ----- */
-  app.get(`${P}/tx`, adminAuth, async (_req, res) => {
-    const r = await pool.query(`SELECT t.id, t.user_id, u.email, t.kind, t.amount, t.status, t.phone, t.created
-      FROM tx t JOIN users u ON u.id=t.user_id ORDER BY t.id DESC LIMIT 100`);
-    res.json(r.rows.map(x => ({ ...x, amount: Number(x.amount) })));
-  });
-
-  /* ----- CSV export: every transaction for every player ----- */
-  app.get(`${P}/tx/export`, adminAuth, async (_req, res) => {
-    const r = await pool.query(`SELECT t.id, t.user_id, u.email, u.full_name, u.id_number, t.kind, t.amount, t.status, t.phone, t.ref, t.created
-      FROM tx t JOIN users u ON u.id=t.user_id ORDER BY t.id`);
-    const esc = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const rows = ["id,player_id,email,full_name,national_id,kind,amount_kes,status,phone,mpesa_ref,date"];
-    for (const x of r.rows) {
-      rows.push([x.id, x.user_id, esc(x.email), esc(x.full_name), esc(x.id_number), x.kind, (Number(x.amount) / 100).toFixed(2),
-        x.status, esc(x.phone), esc(x.ref),
-        new Date(Number(x.created)).toISOString()].join(","));
-    }
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition",
-      `attachment; filename="transactions-${new Date().toISOString().slice(0, 10)}.csv"`);
-    res.send(rows.join("\r\n"));
-  });
-
-  /* ----- the panel itself (served only at the secret URL) ----- */
-  app.get(`${P}/panel`, (_req, res) => {
-    res.setHeader("X-Robots-Tag", "noindex, nofollow");
-    res.type("html").send(PANEL_HTML.replaceAll("__BASE__", P));
-  });
-};
-
-const PANEL_HTML = `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
-<title>Console</title><style>
-body{font-family:system-ui;background:#0d1117;color:#e6edf3;margin:0;padding:16px;max-width:1000px;margin:auto}
-h1{font-size:18px}h2{font-size:14px;color:#7d8590;margin:22px 0 8px;text-transform:uppercase;letter-spacing:1px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px}
-.card small{color:#7d8590;font-size:11px;display:block}.card b{font-size:18px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-td,th{padding:7px 8px;border-bottom:1px solid #21262d;text-align:left;white-space:nowrap}
-th{color:#7d8590;font-size:11px;text-transform:uppercase}
-.pos{color:#3fb950}.neg{color:#f85149}
-button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:8px 14px;cursor:pointer}
-button.on{background:#1f6feb;border-color:#1f6feb}button.danger{background:#da3633;border-color:#da3633}
-input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:9px;width:100%;box-sizing:border-box;margin:4px 0}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-#login{max-width:320px;margin:80px auto}
-.scroll{overflow-x:auto}.err{color:#f85149;font-size:13px;min-height:16px}
-.badge{font-size:10px;padding:2px 8px;border-radius:999px;background:#21262d}
-.badge.live{background:#238636}.badge.demo{background:#9e6a03}
-</style></head><body>
-<div id="login">
-  <h1>Operator console</h1>
-  <input id="pw" type="password" placeholder="Password" autocomplete="current-password">
-  <input id="code" inputmode="numeric" placeholder="Authenticator code" maxlength="6">
-  <div class="err" id="lerr"></div><button class="on" style="width:100%" id="loginBtn">Sign in</button>
+<div class="boards">
+  <div class="board"><small>BONUS-WIN</small><b id="lastWin">0.00</b></div>
+  <div class="board"><small>CREDIT KSh</small><b id="balance">0.00</b></div>
 </div>
-<div id="panel" style="display:none">
-  <div class="row" style="justify-content:space-between"><h1>Operator console</h1>
-    <span><span class="badge" id="modeBadge"></span> <span class="badge" id="wdBadge"></span></span></div>
 
-  <h2>Today & totals</h2><div class="cards" id="cards"></div>
-
-  <h2>Controls</h2>
-  <div class="row">
-    <button id="btnMode"></button>
-    <button id="btnWd"></button>
-    <span style="flex:1"></span>
-    <input id="jp" type="number" placeholder="Jackpot KSh" style="width:130px">
-    <button id="jpBtn">Set jackpot</button>
-  </div>
-  <p style="color:#7d8590;font-size:12px">Pause withdrawals during a glitch — deposits and play continue, balances are safe. Demo mode pauses all real money; players get free credits.</p>
-
-  <h2>Payout rate (house margin)</h2>
-  <div class="row">
-    <label style="font-size:12px;color:#7d8590">Player payout (RTP) %
-      <input id="rtpInput" type="number" step="0.5" min="8" max="90" style="width:90px"></label>
-    <span id="rtpMargin" style="font-family:system-ui;font-size:15px"></span>
-    <button id="rtpSave" class="on">Apply</button>
-    <button id="auditBtn">Change log</button>
-  </div>
-  <p style="color:#7d8590;font-size:12px">Takes effect on the next spin. All bet types stay at the same RTP. Every change is timestamped in the change log — BCLB audits declared payout rates, so keep this matching your licence.</p>
-  <div class="scroll" id="auditWrap" style="display:none;margin-top:8px"><table id="audit"><thead><tr><th>When</th><th>Setting</th><th>From</th><th>To</th></tr></thead><tbody></tbody></table></div>
-
-  <h2>Marketing &amp; expenses</h2>
-  <div class="row">
-    <select id="expCat" style="background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:9px">
-      <option value="marketing">Marketing</option>
-      <option value="bonuses">Player bonuses</option>
-      <option value="hosting">Hosting / tech</option>
-      <option value="licensing">Licensing / legal</option>
-      <option value="other">Other</option>
-    </select>
-    <input id="expAmt" type="number" placeholder="Amount KSh" style="width:130px">
-    <input id="expNote" placeholder="Note (e.g. Facebook campaign)" style="flex:1;min-width:160px">
-    <button id="expAdd" class="on">Record spend</button>
-  </div>
-  <div class="scroll" style="margin-top:8px"><table id="exp"><thead><tr><th>Date</th><th>Category</th><th>Amount</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>
-
-  <h2>Tax &amp; margin</h2>
-  <div class="row">
-    <button id="btnWht"></button>
-    <label style="font-size:12px;color:#7d8590">WHT rate %<input id="whtRate" type="number" step="0.5" style="width:80px"></label>
-    <label style="font-size:12px;color:#7d8590">Excise % of stakes<input id="exRate" type="number" step="0.5" style="width:80px"></label>
-    <label style="font-size:12px;color:#7d8590">Betting tax % of GGR<input id="btRate" type="number" step="0.5" style="width:80px"></label>
-    <label style="font-size:12px;color:#7d8590">Corporate tax %<input id="ctRate" type="number" step="0.5" style="width:80px"></label>
-    <button id="taxSave">Save rates</button>
-  </div>
-  <div class="card" id="marginCalc" style="margin-top:10px"></div>
-  <p style="color:#7d8590;font-size:12px">Withholding tax is deducted from the player's winnings and remitted to KRA — it is not your revenue. Rates change; confirm current figures with your accountant. Turning WHT off while the law requires it is tax evasion.</p>
-
-  <h2 class="row" style="justify-content:space-between">PesaLink requests (pay from your bank, then mark paid)</h2>
-  <div class="scroll"><table id="pl"><thead><tr><th>Ref</th><th>Player</th><th>Nat. ID</th><th>Amount</th><th>Bank</th><th>Account</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
-
-  <h2>Profit per day (live spins only)</h2>
-  <div class="scroll"><table id="daily"><thead><tr><th>Date</th><th>Spins</th><th>Staked</th><th>Paid out</th><th>Gross profit</th><th>Marketing</th><th>After spend</th><th>Margin</th></tr></thead><tbody></tbody></table></div>
-
-  <h2>Players</h2>
-  <div class="row"><input id="q" placeholder="Search email" style="flex:1"><button id="searchBtn">Search</button></div>
-  <div class="scroll"><table id="players"><thead><tr><th>ID</th><th>Name</th><th>Nat. ID</th><th>Email</th><th>Phone</th><th>Balance</th><th>Deposited</th><th>Withdrawn</th><th>Net lost</th><th></th></tr></thead><tbody></tbody></table></div>
-
-  <h2 class="row" style="justify-content:space-between">Recent transactions
-    <button id="exportBtn">Download all (CSV)</button></h2>
-  <div class="scroll"><table id="tx"><thead><tr><th>ID</th><th>Player</th><th>Kind</th><th>Amount</th><th>Status</th><th>Phone</th><th>When</th></tr></thead><tbody></tbody></table></div>
+<div style="margin:5px 12px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
+     border:2px solid var(--gold);border-radius:9px;text-align:center;padding:3px">
+  <span style="font-family:'Russo One';font-size:11px;color:#ffd98a;letter-spacing:2px">JACKPOT</span>
+  <div style="font-family:'Russo One';font-size:clamp(16px,5vw,21px);color:var(--gold);text-shadow:0 0 10px rgba(243,196,64,.7)" id="jackpotPool">KSh —</div>
 </div>
+
+<div id="winnersBar" style="display:none;margin:4px 12px 0;overflow:hidden;white-space:nowrap;
+     background:#1a0b0b;border:1px solid #5a4a1c;border-radius:8px;padding:6px 0">
+  <div id="winnersTrack" style="display:inline-block;padding-left:100%;animation:tick 30s linear infinite;
+       font-size:12px;color:#ffd98a"></div>
+</div>
+<style>@keyframes tick{to{transform:translateX(-100%)}}
+@media (prefers-reduced-motion: reduce){#winnersTrack{animation:none;padding-left:8px}}</style>
+
+<div class="wheel-wrap" id="wheel">
+  <div class="hub"><div class="num" id="hubNum">--</div><div class="msg" id="hubMsg">Log in to play</div></div>
+</div>
+
+<div class="bets" id="bets"></div>
+
+<div class="chips" id="chips"></div>
+
+<div class="bar">
+  <button class="ghost" id="depositBtn">Deposit</button>
+  <button class="ghost" id="withdrawBtn">Withdraw</button>
+  <button class="red" id="spinBtn">START</button>
+</div>
+
+<!-- auth sheet -->
+<div class="sheet open" id="authSheet"><div class="card">
+  <h2>Sign in</h2>
+  <label>Email</label><input id="email" type="email" autocomplete="email">
+  <label>Full name — as on your ID (new accounts)</label><input id="regName" autocomplete="name">
+  <label>National ID number (new accounts)</label><input id="regId" inputmode="numeric" maxlength="9">
+  <label>M-Pesa number (new accounts)</label><input id="regPhone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
+  <label>Password</label><input id="password" type="password" autocomplete="current-password">
+  <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
+    <input type="checkbox" id="over18" style="width:auto"> I confirm I am 18 or older
+  </label>
+  <div class="err" id="authErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="loginBtn">Log in</button>
+    <button class="ghost" id="registerBtn">Create account</button>
+  </div>
+  <p class="rg">Play responsibly. Betting is for entertainment — never stake money you can't afford to lose.
+  If gambling stops being fun, free help is available.</p>
+</div></div>
+
+<!-- BONUS: pick 3 of 9 -->
+<div class="sheet" id="bonusSheet"><div class="card" style="border-color:#7a1fa0">
+  <h2 style="color:#e6a8ff">&#128142; DIAMOND BONUS — pick 3</h2>
+  <p style="font-size:12px;color:#e6c9c9;margin-bottom:10px" id="bonusMsg">Each tile hides a multiplier of your stake. Choose three.</p>
+  <div id="bonusGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"></div>
+  <div style="font-family:'Russo One';font-size:18px;color:var(--gold);text-align:center;margin-top:12px;min-height:24px" id="bonusTotal"></div>
+  <button id="bonusDone" style="display:none;width:100%;margin-top:10px">Collect</button>
+</div></div>
+
+<!-- PesaLink sheet -->
+<div class="sheet" id="plSheet"><div class="card">
+  <h2>PesaLink bank transfer</h2>
+  <p style="font-size:12px;color:#e6c9c9">For amounts above KSh 70,000. Processed within one business day.</p>
+  <label>Amount (KSh)</label><input id="plAmount" type="number" min="70001" step="1000">
+  <label>Bank name</label><input id="plBank" placeholder="e.g. Equity Bank">
+  <label>Account number</label><input id="plAcct" inputmode="numeric">
+  <div class="err" id="plErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="plGo">Request transfer</button>
+    <button class="ghost" id="plCancel">Cancel</button>
+  </div>
+</div></div>
+
+<!-- deposit sheet -->
+<div class="sheet" id="depositSheet"><div class="card">
+  <h2>Deposit via M-Pesa</h2>
+  <label>M-Pesa number</label><input id="depPhone" inputmode="tel" placeholder="07XX XXX XXX">
+  <label>Amount (KSh 100 – 100,000)</label><input id="depAmount" type="number" min="100" max="100000" step="50" value="200">
+  <div class="err" id="depErr"></div>
+  <p class="rg" id="paybillNote" style="text-align:left;margin-top:10px"></p>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="depGo">Send M-Pesa prompt</button>
+    <button class="ghost" id="depCancel">Cancel</button>
+  </div>
+</div></div>
+
+<!-- withdraw sheet -->
+<div class="sheet" id="withdrawSheet"><div class="card">
+  <h2>Withdraw to M-Pesa</h2>
+  <label>Amount (KSh 100 – 70,000 via M-Pesa)</label><input id="wdAmount" type="number" min="100" step="50">
+  <p class="rg" style="text-align:left;margin-top:6px">Max 3 withdrawals per day. Above KSh 70,000 use PesaLink bank transfer.</p>
+  <p class="rg" style="text-align:left" id="wdDest"></p>
+  <div class="err" id="wdErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="wdGo">Send to M-Pesa</button>
+    <button class="ghost" id="wdCancel">Cancel</button>
+  </div>
+</div></div>
+
 <script>
-const B="__BASE__"; let T=sessionStorage.getItem("adm")||null; let S={};
-const K=c=>"KSh "+(c/100).toLocaleString("en-KE");
-const api=async(p,b)=>{const r=await fetch(B+p,{method:b?"POST":"GET",headers:{"Content-Type":"application/json",Authorization:"Bearer "+T},body:b?JSON.stringify(b):undefined});const d=await r.json();if(!r.ok)throw new Error(d.error||"Error");return d};
-
-async function login(){
-  try{const d=await api("/login",{password:document.getElementById("pw").value,code:document.getElementById("code").value});
-    T=d.token;sessionStorage.setItem("adm",T);show();
-  }catch(e){document.getElementById("lerr").textContent=e.message}
-}
-
-async function show(){
-  document.getElementById("login").style.display="none";
-  document.getElementById("panel").style.display="block";
-  await refresh();loadPlayers();loadTx();loadPesalink();loadExpenses();
-}
-
-async function refresh(){
-  const s=await api("/stats");S=s.settings;
-  const today=s.daily[0]||{staked:0,paid:0,profit:0,spins:0};
-  document.getElementById("cards").innerHTML=[
-    ["Profit today",K(today.profit),today.profit>=0?"pos":"neg"],
-    ["Spins today",today.spins],
-    ["Players",s.players],
-    ["Deposits (all-time)",K(s.deposits.total)],
-    ["Withdrawals (all-time)",K(s.withdrawals.total)],
-    ["Player balances (liability)",K(s.player_balances)],
-    ["Pending payouts",s.pending_withdrawals.count+" / "+K(s.pending_withdrawals.total)],
-    ["Jackpot pool",K(s.jackpot_pool)],
-    ["WHT collected (owed to KRA)",K(s.wht_collected)],
-    ["PesaLink pending",s.pesalink_pending.count+" / "+K(s.pesalink_pending.total)],
-    ["Marketing & expenses",K(s.expenses_total)]
-  ].map(function(row){
-    var l=row[0],v=row[1],c=row[2];
-    return '<div class="card"><small>'+l+'</small><b class="'+(c||"")+'">'+v+"</b></div>";
-  }).join("");
-
-  document.getElementById("daily").tBodies[0].innerHTML=s.daily.map(function(d){
-    return "<tr><td>"+d.date+"</td><td>"+d.spins+"</td><td>"+K(d.staked)+"</td><td>"+K(d.paid)+
-      '</td><td class="'+(d.profit>=0?"pos":"neg")+'">'+K(d.profit)+"</td>"+
-      "<td>"+(d.marketing?K(d.marketing):"—")+"</td>"+
-      '<td class="'+(d.net>=0?"pos":"neg")+'">'+K(d.net)+"</td><td>"+
-      (d.staked?Math.round(100*d.profit/d.staked)+"%":"—")+"</td></tr>";
-  }).join("");
-
-  document.getElementById("modeBadge").textContent=S.live_mode?"LIVE":"DEMO";
-  document.getElementById("modeBadge").className="badge "+(S.live_mode?"live":"demo");
-  document.getElementById("wdBadge").textContent=S.withdrawals_enabled?"Withdrawals ON":"Withdrawals PAUSED";
-  var btnMode=document.getElementById("btnMode");
-  btnMode.textContent=S.live_mode?"Switch to DEMO mode":"Switch to LIVE mode";
-  btnMode.className=S.live_mode?"":"on";
-  var btnWd=document.getElementById("btnWd");
-  btnWd.textContent=S.withdrawals_enabled?"Pause withdrawals":"Resume withdrawals";
-  btnWd.className=S.withdrawals_enabled?"danger":"on";
-
-  var btnWht=document.getElementById("btnWht");
-  btnWht.textContent=S.wht_enabled?"WHT ON — charging":"WHT OFF — not charging";
-  btnWht.className=S.wht_enabled?"on":"danger";
-  document.getElementById("whtRate").value=S.wht_rate;
-  document.getElementById("exRate").value=S.excise_rate;
-  document.getElementById("btRate").value=S.betting_tax_rate;
-  document.getElementById("ctRate").value=S.corp_tax_rate;
-  var rtpEl=document.getElementById("rtpInput");
-  if(document.activeElement!==rtpEl) rtpEl.value=S.target_rtp;
-  document.getElementById("rtpMargin").innerHTML=
-    "= house margin <b class='pos'>"+(100-Number(S.target_rtp)).toFixed(1)+"%</b>";
-  drawMargin(s);
-}
-
-
-function drawMargin(s){
-  var ex=Number(S.excise_rate)||0, bt=Number(S.betting_tax_rate)||0, ct=Number(S.corp_tax_rate)||0;
-  var ggr=100-Number(S.target_rtp);
-  var exAmt=ex;                 // per KSh 100 staked, excise is charged on the stake
-  var btAmt=bt*ggr/100;
-  var pre=ggr-exAmt-btAmt;
-  var net=pre*(1-ct/100);
-  var realised=s.daily[0]&&s.daily[0].staked?Math.round(100*s.daily[0].profit/s.daily[0].staked):null;
-  document.getElementById("marginCalc").innerHTML=
-    "<small>Per KSh 100 staked, at "+ggr+"% gross margin</small>"+
-    "<div style='font-size:13px;line-height:1.9;margin-top:6px'>"+
-    "Gross gaming revenue: <b>KSh "+ggr.toFixed(2)+"</b><br>"+
-    "&minus; excise on stakes ("+ex+"%): KSh "+exAmt.toFixed(2)+"<br>"+
-    "&minus; betting tax ("+bt+"% of GGR): KSh "+btAmt.toFixed(2)+"<br>"+
-    "= pre-tax profit: KSh "+pre.toFixed(2)+"<br>"+
-    "&minus; corporate tax ("+ct+"%): KSh "+(pre*ct/100).toFixed(2)+"<br>"+
-    "<b class='"+(net>=30?"pos":"neg")+"' style='font-size:16px'>Net profit: KSh "+net.toFixed(2)+" ("+net.toFixed(1)+"%)</b>"+
-    (realised!==null?"<br><small style='color:#7d8590'>Today's realised gross margin: "+realised+"%</small>":"")+
-    "</div>";
-}
-
-async function saveTax(){
-  await api("/settings",{
-    wht_rate:Number(document.getElementById("whtRate").value),
-    excise_rate:Number(document.getElementById("exRate").value),
-    betting_tax_rate:Number(document.getElementById("btRate").value),
-    corp_tax_rate:Number(document.getElementById("ctRate").value)});
-  refresh();
-}
-
-async function saveRtp(){
-  var v=Number(document.getElementById("rtpInput").value);
-  if(!(v>=8&&v<=90)){alert("Payout rate must be between 8% and 90%.");return}
-  if(!confirm("Set player payout to "+v+"% (house margin "+(100-v).toFixed(1)+"%)?\n\nThis changes the odds from the next spin and is recorded in the change log."))return;
-  await api("/settings",{target_rtp:v});refresh();loadAudit();
-}
-async function loadAudit(){
-  var a=await api("/audit");
-  document.getElementById("audit").tBodies[0].innerHTML=a.map(function(x){
-    return "<tr><td>"+new Date(Number(x.created)).toLocaleString()+"</td><td>"+x.key+
-      "</td><td>"+(x.old_value===null?"—":x.old_value)+"</td><td>"+x.new_value+"</td></tr>";
-  }).join("");
-}
-async function loadExpenses(){
-  var e=await api("/expenses");
-  document.getElementById("exp").tBodies[0].innerHTML=e.rows.map(function(x){
-    return "<tr><td>"+new Date(Number(x.created)).toLocaleDateString()+"</td><td>"+x.category+
-      "</td><td>"+K(x.amount)+"</td><td>"+(x.note||"")+
-      '</td><td><button class="expdel" data-id="'+x.id+'">Delete</button></td></tr>';
-  }).join("");
-  document.querySelectorAll(".expdel").forEach(function(b){
-    b.onclick=async function(){ if(!confirm("Delete this entry?"))return;
-      await api("/expenses/"+b.dataset.id+"/delete",{});loadExpenses();refresh(); };
-  });
-}
-async function addExpense(){
-  var amt=Number(document.getElementById("expAmt").value);
-  if(!(amt>0)){alert("Enter an amount.");return}
-  await api("/expenses",{amount:amt,category:document.getElementById("expCat").value,
-    note:document.getElementById("expNote").value});
-  document.getElementById("expAmt").value="";document.getElementById("expNote").value="";
-  loadExpenses();refresh();
-}
-async function loadPesalink(){
-  var p=await api("/pesalink");
-  document.getElementById("pl").tBodies[0].innerHTML=p.map(function(x){
-    var act=x.status==="requested"
-      ? '<button class="plbtn on" data-ref="'+x.ref+'" data-a="paid">Mark paid</button> '+
-        '<button class="plbtn danger" data-ref="'+x.ref+'" data-a="reject">Reject &amp; refund</button>'
-      : "";
-    return "<tr><td>"+x.ref.slice(0,10)+"</td><td>"+(x.full_name||"—")+"</td><td>"+(x.id_number||"—")+
-      "</td><td>"+K(x.amount)+"</td><td>"+(x.bank||"")+"</td><td>"+(x.account||"")+
-      "</td><td>"+x.status+"</td><td>"+act+"</td></tr>";
-  }).join("");
-  document.querySelectorAll(".plbtn").forEach(function(b){
-    b.onclick=async function(){
-      if(b.dataset.a==="reject"&&!confirm("Reject and refund this request?"))return;
-      await api("/pesalink/"+b.dataset.ref,{action:b.dataset.a});
-      loadPesalink();refresh();
-    };
-  });
-}
-
-async function toggle(k){
-  if(k==="live_mode"&&!confirm(S.live_mode?"Switch everyone to DEMO (free) mode?":"Go LIVE with real money?"))return;
-  if(k==="withdrawals_enabled"&&S.withdrawals_enabled&&!confirm("Pause all withdrawals?"))return;
-  var body={};body[k]=!S[k];
-  await api("/settings",body);refresh();
-}
-
-async function setJackpot(){
-  var jp=document.getElementById("jp");
-  await api("/jackpot",{pool:Number(jp.value)*100});jp.value="";refresh();
-}
-
-async function loadPlayers(){
-  var q=document.getElementById("q").value||"";
-  var p=await api("/players?q="+encodeURIComponent(q));
-  document.getElementById("players").tBodies[0].innerHTML=p.map(function(u){
-    return "<tr><td>"+u.id+"</td><td>"+(u.full_name||"—")+"</td>"+
-      "<td>"+(u.id_number||"—")+' <button class="idvbtn'+(u.id_verified?" on":"")+'" data-id="'+u.id+'" data-v="'+(!u.id_verified)+'">'+(u.id_verified?"ID \u2713":"Mark ID \u2713")+"</button></td>"+
-      "<td>"+u.email+"</td><td>"+(u.phone?"0"+u.phone.slice(3):"—")+(u.phone_verified?" \u2713":" \u2717")+"</td>"+
-      "<td>"+K(u.balance)+"</td><td>"+K(u.deposited)+"</td><td>"+K(u.withdrawn)+"</td>"+
-      '<td class="'+(u.net_lost>=0?"pos":"neg")+'">'+K(u.net_lost)+"</td>"+
-      '<td><button class="suspbtn'+(u.suspended?" on":"")+'" data-id="'+u.id+'" data-v="'+(!u.suspended)+'">'+(u.suspended?"Unsuspend":"Suspend")+"</button></td></tr>";
-  }).join("");
-  document.querySelectorAll(".idvbtn").forEach(function(b){
-    b.onclick=function(){idv(Number(b.dataset.id), b.dataset.v==="true");};
-  });
-  document.querySelectorAll(".suspbtn").forEach(function(b){
-    b.onclick=function(){susp(Number(b.dataset.id), b.dataset.v==="true");};
-  });
-}
-
-async function susp(id,v){await api("/players/"+id+"/suspend",{suspended:v});loadPlayers();}
-async function idv(id,v){await api("/players/"+id+"/idverify",{verified:v});loadPlayers();}
-
-async function exportTx(){
-  const r=await fetch(B+"/tx/export",{headers:{Authorization:"Bearer "+T}});
-  if(!r.ok){alert("Export failed — log in again.");return}
-  const blob=await r.blob();const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download="transactions-"+new Date().toISOString().slice(0,10)+".csv";
-  a.click();URL.revokeObjectURL(a.href);
-}
-
-async function loadTx(){
-  const t=await api("/tx");
-  document.getElementById("tx").tBodies[0].innerHTML=t.map(function(x){
-    return "<tr><td>"+x.id+"</td><td>"+x.email+"</td><td>"+x.kind+"</td><td>"+K(x.amount)+"</td><td>"+x.status+"</td><td>"+(x.phone||"")+"</td><td>"+new Date(Number(x.created)).toLocaleString()+"</td></tr>";
-  }).join("");
-}
-
-document.getElementById("loginBtn").onclick=login;
-document.getElementById("btnMode").onclick=function(){toggle("live_mode")};
-document.getElementById("btnWd").onclick=function(){toggle("withdrawals_enabled")};
-document.getElementById("btnWht").onclick=function(){
-  if(S.wht_enabled&&!confirm("Stop deducting withholding tax?\n\nOnly do this if the law no longer requires it — withholding when required is a legal obligation."))return;
-  api("/settings",{wht_enabled:!S.wht_enabled}).then(refresh);
+/* ---- game data (must match server WHEEL order) ---- */
+const ANIMALS = {
+  star:{n:"\u2605",c:"#f3c440",odds:"50\u2013100",star:1},
+  elephant:{n:"ELEPHANT",c:"#78909c",odds:"15",big:1},
+  rhino:{n:"RHINO",c:"#546e7a",odds:"10",big:1},
+  lion:{n:"LION",c:"#c8862a",odds:"6",big:1},
+  buffalo:{n:"BUFFALO",c:"#6d4c41",odds:"4",big:1},
+  leopard:{n:"LEOPARD",c:"#e08a1e",odds:"3",big:1},
+  giraffe:{n:"GIRAFFE",c:"#d4a017",odds:"2.5"},
+  zebra:{n:"ZEBRA",c:"#37474f",odds:"2"},
+  allprize:{n:"ALL",c:"#7a1fa0"}, diamond:{n:"\u25C6",c:"#3a3ad0"},
 };
-document.getElementById("taxSave").onclick=saveTax;
+const WHEEL = ["star","star","allprize","zebra","diamond","giraffe","leopard","diamond",
+  "zebra","buffalo","diamond","lion","elephant","diamond","giraffe","rhino","diamond","leopard",
+  "zebra","diamond","giraffe","buffalo","diamond","allprize"];
+const BETTABLE = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
+const CHIP_VALUES = [20,50,100,200];
 
-document.getElementById("rtpSave").onclick=saveRtp;
-document.getElementById("expAdd").onclick=addExpense;
-document.getElementById("auditBtn").onclick=function(){
-  var w=document.getElementById("auditWrap");
-  if(w.style.display==="none"){w.style.display="block";loadAudit();}else{w.style.display="none";}
+let token = localStorage.getItem("fs_token") || null;
+let balance = 0, bets = {}, chip = 20, spinning = false;
+let lastJackpotAt = 0, isLive = true, myPhone = "";
+
+const $ = id => document.getElementById(id);
+const money = k => (k/100).toLocaleString("en-KE",{minimumFractionDigits:2});
+const open_ = id => $(id).classList.add("open");
+const close_ = id => $(id).classList.remove("open");
+
+/* ---------- AUDIO: synthesised SFX + procedural music (no audio files) ---------- */
+let audioCtx = null, soundOn = localStorage.getItem("fs_sound") !== "off";
+function ac(){
+  if(!audioCtx){
+    try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ return null; }
+  }
+  if(audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+function tone(freq, dur, type, vol, delay){
+  if(!soundOn) return;
+  const c = ac(); if(!c) return;
+  const t0 = c.currentTime + (delay || 0);
+  const osc = c.createOscillator(), g = c.createGain();
+  osc.type = type || "sine";
+  osc.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(vol || 0.15, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(c.destination);
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
+const sfx = {
+  tick(){ tone(880, 0.04, "square", 0.05); },
+  chip(){ tone(660, 0.07, "triangle", 0.12); },
+  spin(){ tone(220, 0.15, "sawtooth", 0.10); },
+  lose(){ tone(200, 0.25, "sine", 0.10); tone(150, 0.3, "sine", 0.09, 0.12); },
+  win(){ [523,659,784,1047].forEach((f,i)=>tone(f, 0.22, "triangle", 0.16, i*0.09)); },
+  bigWin(){ [523,659,784,1047,1319].forEach((f,i)=>tone(f, 0.3, "triangle", 0.18, i*0.08));
+            [392,523].forEach((f,i)=>tone(f, 0.5, "sine", 0.12, 0.45+i*0.12)); },
+  jackpot(){ [523,587,659,698,784,880,988,1047].forEach((f,i)=>tone(f,0.35,"square",0.16,i*0.1));
+             [1047,1319,1568].forEach((f,i)=>tone(f,0.8,"triangle",0.2,0.85+i*0.05)); },
+  error(){ tone(180, 0.18, "square", 0.10); },
 };
-document.getElementById("jpBtn").onclick=setJackpot;
-document.getElementById("searchBtn").onclick=loadPlayers;
-document.getElementById("q").addEventListener("keydown",function(e){if(e.key==="Enter")loadPlayers();});
-document.getElementById("exportBtn").onclick=exportTx;
 
-if(T)show();
-setInterval(function(){
-  if(T&&document.getElementById("panel").style.display!=="none")refresh();
-},30000);
-</script></body></html>`;
+/* Procedural music: a step sequencer that switches "mood" with game state.
+ * Each mood is a note pattern + timbre; music stops exactly when the wheel
+ * stops, and swaps to the bonus/jackpot theme while those games run. */
+const MOODS = {
+  idle:    { notes:[220,277,330,277], step:0.42, type:"triangle", vol:0.045, bass:110 },
+  spin:    { notes:[330,392,440,392,330,294], step:0.16, type:"sawtooth", vol:0.055, bass:110 },
+  bonus:   { notes:[311,370,415,466,415,370], step:0.20, type:"square", vol:0.06, bass:155 },
+  jackpot: { notes:[523,659,784,1047,784,659], step:0.15, type:"triangle", vol:0.075, bass:131 },
+};
+let music = { mood:null, timer:null, i:0 };
+function setMusic(mood){
+  if(music.mood === mood) return;
+  music.mood = mood; music.i = 0;
+  clearInterval(music.timer); music.timer = null;
+  if(!mood || !soundOn) return;
+  const m = MOODS[mood]; if(!m) return;
+  const play = () => {
+    if(!soundOn){ return; }
+    const n = m.notes[music.i % m.notes.length];
+    tone(n, m.step*1.6, m.type, m.vol);
+    if(music.i % 4 === 0) tone(m.bass, m.step*2.4, "sine", m.vol*0.9);
+    music.i++;
+  };
+  play();
+  music.timer = setInterval(play, m.step*1000);
+}
+function stopMusic(){ setMusic(null); }
+
+function updateSoundIcon(){ $("soundToggle").innerHTML = soundOn ? "&#128266;" : "&#128263;"; }
+$("soundToggle").onclick = () => {
+  soundOn = !soundOn;
+  localStorage.setItem("fs_sound", soundOn ? "on" : "off");
+  updateSoundIcon();
+  if(!soundOn) stopMusic(); else sfx.chip();
+};
+updateSoundIcon();
+
+/* ---------- LIGHT ENGINE: a different pattern per scenario ---------- */
+let lightTimer = null;
+function stopLights(){
+  clearInterval(lightTimer); lightTimer = null;
+  slots.forEach(s=>{ s.classList.remove("lit","lit-gold","lit-purple","lit-green"); });
+}
+function lightsAll(cls, period){
+  stopLights();
+  let on = false;
+  lightTimer = setInterval(()=>{
+    on = !on;
+    slots.forEach(s=> on ? s.classList.add(cls) : s.classList.remove(cls));
+  }, period);
+}
+function lightsRainbow(){                       // JACKPOT: gold wave around the wheel
+  stopLights();
+  let p = 0;
+  lightTimer = setInterval(()=>{
+    slots.forEach((s,i)=>{
+      s.classList.toggle("lit-gold", (i + p) % 3 === 0);
+      s.classList.toggle("lit-purple", (i + p) % 3 === 1);
+    });
+    p++;
+  }, 110);
+}
+function lightsPurplePulse(){                   // BONUS: slow purple breathing
+  lightsAll("lit-purple", 320);
+}
+function lightsGreenFlash(){                    // FREE SPIN: quick green blink
+  lightsAll("lit-green", 150);
+}
+function lightsWinner(slot){                    // WIN: only the winning slot pulses
+  stopLights();
+  let on = false;
+  lightTimer = setInterval(()=>{
+    on = !on;
+    slots[slot].classList.toggle("lit-gold", on);
+  }, 220);
+}
+
+/* ---------- API ---------- */
+async function api(path, body){
+  const r = await fetch("/api/"+path,{
+    method: body?"POST":"GET",
+    headers:{ "Content-Type":"application/json", ...(token?{Authorization:"Bearer "+token}:{}) },
+    body: body?JSON.stringify(body):undefined
+  });
+  const d = await r.json();
+  if(!r.ok) throw new Error(d.error||"Something went wrong.");
+  return d;
+}
+
+/* ---- build wheel ---- */
+const wrap = $("wheel"), slots=[];
+WHEEL.forEach((key,i)=>{
+  const a = (i/WHEEL.length)*2*Math.PI - Math.PI/2;
+  const el = document.createElement("div");
+  el.className="slot"; el.style.background=ANIMALS[key].c;
+  el.style.left = (50+43*Math.cos(a))+"%"; el.style.top = (50+43*Math.sin(a))+"%";
+  el.innerHTML = "<em>"+ANIMALS[key].n+"</em>";
+  if(key==="star"){
+    el.style.background="radial-gradient(circle at 35% 30%,#fff3b0,#f3c440 60%,#c99a06)";
+    const em=el.querySelector("em");
+    em.style.fontSize="15px"; em.style.color="#241300"; em.style.lineHeight="1";
+  } else {
+    const img=new Image(); img.src="logos/"+key+".png";
+    img.onload=()=>{ el.style.background="#fff url(logos/"+key+".png) center/cover no-repeat";
+                     const em=el.querySelector("em"); if(em) em.style.display="none"; };
+  }
+  wrap.appendChild(el); slots.push(el);
+});
+
+/* ---- build bet panel + chips ---- */
+BETTABLE.forEach(key=>{
+  const t=ANIMALS[key], el=document.createElement("div");
+  el.className="bet"; el.id="bet-"+key;
+  el.innerHTML='<div class="dot" style="background:'+t.c+'">'+t.n+'</div>'+
+    '<small>'+(t.star?"<span style=\'color:var(--gold)\'>\u2605 STAR</span>"
+      :(t.big?"<span style=\'color:var(--gold)\'>BIG 5</span>":"pays"))+'</small>'+
+    '<b>'+t.odds+'\u00D7</b><div class="amt" id="amt-'+key+'"></div>';
+  if(t.star){ el.style.borderColor="var(--gold)"; el.style.background="linear-gradient(#2a1c04,#160b0b)";
+    const d=el.querySelector(".dot"); d.style.fontSize="18px"; d.style.color="#241300"; }
+  else if(t.big) el.style.borderColor="#7a6420";
+  el.onclick=()=>{ if(spinning) return;
+    bets[key]=(bets[key]||0)+chip*100;
+    el.classList.add("active");
+    $("amt-"+key).textContent="KSh "+(bets[key]/100).toLocaleString();
+    ac(); sfx.chip();
+    if(!music.mood) setMusic("idle");      // ambient starts on the first bet
+  };
+  el.oncontextmenu=e=>{e.preventDefault(); delete bets[key];
+    el.classList.remove("active"); $("amt-"+key).textContent="";};
+  if(!t.star){
+    const dimg=new Image(); dimg.src="logos/"+key+".png";
+    dimg.onload=()=>{ const d=el.querySelector(".dot");
+      d.style.background="#fff url(logos/"+key+".png) center/cover no-repeat"; d.textContent=""; };
+  }
+  $("bets").appendChild(el);
+});
+CHIP_VALUES.forEach(v=>{
+  const b=document.createElement("button");
+  b.className="chip"+(v===chip?" sel":""); b.textContent=v;
+  b.onclick=()=>{chip=v;[...$("chips").children].forEach(c=>c.classList.remove("sel"));b.classList.add("sel");sfx.chip();};
+  $("chips").appendChild(b);
+});
+
+function clearBets(){ bets={}; BETTABLE.forEach(k=>{ $("bet-"+k).classList.remove("active"); $("amt-"+k).textContent=""; }); }
+function setBalance(k){ balance=k; $("balance").textContent=money(k); }
+
+async function refreshWinners(){
+  if(!isLive){ $("winnersBar").style.display="none"; return; }
+  try{
+    const w = await fetch("/api/winners").then(r=>r.json());
+    if(!w.length){ $("winnersBar").style.display="none"; return; }
+    $("winnersBar").style.display="block";
+    $("winnersTrack").innerHTML = w.map(x =>
+      (x.jackpot ? "\u{1F3C6} <b style='color:var(--gold)'>JACKPOT</b> — " : "\u{1F981} ") +
+      x.name + " won <b>KSh " + (x.amount/100).toLocaleString("en-KE") + "</b>"
+    ).join('<span style="color:#5a4a1c"> &nbsp;\u2022&nbsp; </span>');
+    const jp = w.find(x => x.jackpot);
+    if(jp && jp.at > lastJackpotAt){
+      if(lastJackpotAt) $("hubMsg").textContent = "\u{1F3C6} " + jp.name + " just hit the JACKPOT!";
+      lastJackpotAt = jp.at;
+    }
+  }catch(e){}
+}
+async function refreshPool(){
+  try{ const j = await fetch("/api/jackpot").then(r=>r.json());
+    $("jackpotPool").textContent = "KSh " + (j.pool/100).toLocaleString("en-KE"); }catch(e){}
+}
+
+function showPaybill(id){
+  $("paybillNote").innerHTML = "Or pay the paybill directly from your M-Pesa menu \u2014 "+
+    "Account number: <b style='color:var(--gold)'>SPIN"+id+"</b>. Your wallet credits automatically.";
+}
+function applyAccount(me){
+  myPhone = me.phone || "";
+  $("depPhone").value = me.phone ? "0"+me.phone.slice(3) : "";
+  const local = myPhone ? "0"+myPhone.slice(3) : "";
+  if(me.wht>0) $("wdDest").dataset.wht=me.wht;
+  $("wdDest").textContent = me.phone_verified
+    ? "Winnings go to your registered M-Pesa number "+local+". To change it, contact support."
+    : "Withdrawals unlock after your first successful deposit.";
+}
+function applyMode(live){
+  isLive = live;
+  $("modeBadge").style.display = live ? "none" : "inline";
+  $("depositBtn").disabled = !live; $("withdrawBtn").disabled = !live;
+  if(!live) $("winnersBar").style.display="none"; else refreshWinners();
+}
+
+/* ---- auth ---- */
+async function boot(){
+  if(!token) return;
+  try{ const me = await api("me"); setBalance(me.balance);
+    applyMode(me.live); applyAccount(me);
+    close_("authSheet"); $("hubMsg").textContent="Place your bets"; }
+  catch(e){ token=null; localStorage.removeItem("fs_token"); }
+}
+$("loginBtn").onclick = async ()=>{
+  try{ const d=await api("login",{email:$("email").value,password:$("password").value});
+    token=d.token; localStorage.setItem("fs_token",token); setBalance(d.balance);
+    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("authSheet"); $("hubMsg").textContent="Place your bets"; sfx.chip();
+  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
+};
+$("registerBtn").onclick = async ()=>{
+  try{ const d=await api("register",{email:$("email").value,password:$("password").value,
+      phone:$("regPhone").value,full_name:$("regName").value,id_number:$("regId").value,
+      over18:$("over18").checked});
+    token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
+    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("authSheet"); $("hubMsg").textContent="Deposit to play"; sfx.chip();
+  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
+};
+
+/* ---- deposit ---- */
+$("depositBtn").onclick=()=>open_("depositSheet");
+$("depCancel").onclick=()=>close_("depositSheet");
+$("depGo").onclick = async ()=>{
+  try{
+    const d = await api("deposit/init",{amount: Number($("depAmount").value), phone: $("depPhone").value});
+    $("depErr").textContent = d.message;   // "Check your phone and enter your M-Pesa PIN."
+    const before = balance;
+    const poll = setInterval(async ()=>{
+      try{
+        const me = await api("me");
+        if(me.balance > before){ setBalance(me.balance); clearInterval(poll);
+          close_("depositSheet"); $("depErr").textContent="";
+          $("hubMsg").textContent="Credited. Good luck!"; sfx.win(); }
+      }catch(e){}
+    }, 4000);
+    setTimeout(()=>clearInterval(poll), 180000);
+  }catch(e){ $("depErr").textContent=e.message; sfx.error(); }
+};
+
+/* ---- withdraw ---- */
+$("withdrawBtn").onclick = ()=>{ $("wdErr").textContent=""; open_("withdrawSheet"); };
+$("wdCancel").onclick=()=>close_("withdrawSheet");
+$("wdGo").onclick = async ()=>{
+  const amt=Number($("wdAmount").value);
+  if(amt>70000){ close_("withdrawSheet"); $("plAmount").value=amt; open_("plSheet"); return; }
+  try{
+    const d = await api("withdraw",{amount:amt});
+    setBalance(d.balance); close_("withdrawSheet");
+    $("hubMsg").textContent=d.message; sfx.win();
+  }catch(e){ $("wdErr").textContent=e.message; sfx.error(); }
+};
+$("plCancel").onclick=()=>close_("plSheet");
+$("plGo").onclick = async ()=>{
+  try{
+    const d = await api("withdraw/pesalink",{amount:Number($("plAmount").value),
+      bank:$("plBank").value, account:$("plAcct").value});
+    setBalance(d.balance); close_("plSheet");
+    $("hubMsg").textContent=d.message; sfx.win();
+  }catch(e){ $("plErr").textContent=e.message; sfx.error(); }
+};
+
+/* ---- diamond bonus: pick 3 of 9 ---- */
+function playBonus(token){
+  return new Promise(resolve=>{
+    const grid=$("bonusGrid"); grid.innerHTML=""; let picked=[];
+    $("bonusTotal").textContent=""; $("bonusDone").style.display="none";
+    $("bonusMsg").textContent="Each tile hides a multiplier of your stake. Choose three.";
+    for(let i=0;i<9;i++){
+      const t=document.createElement("button");
+      t.textContent="?"; t.dataset.i=i;
+      t.style.cssText="aspect-ratio:1;font-size:20px;background:linear-gradient(#6a2a9e,#3d1560);color:#fff;box-shadow:0 3px 0 #24093a;border-radius:12px;padding:0";
+      t.onclick=async ()=>{
+        if(picked.length>=3||picked.includes(i)) return;
+        picked.push(i); t.disabled=true; t.style.opacity="1";
+        t.textContent="\u2726"; sfx.chip();
+        if(picked.length===3){
+          $("bonusMsg").textContent="Revealing…";
+          try{
+            const r=await api("bonus/pick",{token:token,picks:picked});
+            const rev={}; r.revealed.forEach(x=>rev[x.i]=x.mult);
+            [...grid.children].forEach((b,idx)=>{
+              b.disabled=true;
+              if(rev[idx]!=null){ b.textContent=rev[idx]+"\u00D7";
+                b.style.background="linear-gradient(#ffe08a,var(--gold))"; b.style.color="#241300"; }
+              else { b.textContent=r.all[idx]+"\u00D7"; b.style.opacity=".35"; }
+            });
+            setBalance(r.balance);
+            $("bonusTotal").innerHTML="BONUS WIN: KSh "+(r.payout/100).toLocaleString()+
+              (r.tax>0?"<br><span style='font-size:11px;color:#caa'>after KSh "+(r.tax/100).toLocaleString()+" withholding tax</span>":"");
+            $("bonusMsg").textContent="";
+            sfx.bigWin();
+            if(navigator.vibrate) navigator.vibrate([120,60,120,60,200]);
+            $("bonusDone").style.display="block";
+            $("bonusDone").onclick=()=>{ close_("bonusSheet"); stopMusic(); resolve(); };
+          }catch(e){
+            $("bonusMsg").textContent=e.message; sfx.error();
+            $("bonusDone").style.display="block";
+            $("bonusDone").onclick=()=>{ close_("bonusSheet"); resolve(); };
+          }
+        }
+      };
+      grid.appendChild(t);
+    }
+    open_("bonusSheet");
+  });
+}
+
+/* ---- present one spin outcome ---- */
+async function showOutcome(d,isRespin){
+  await chase(d.slot);
+  $("lastWin").textContent = money(d.payout);
+  if(d.jackpot>0){
+    // JACKPOT: gold/purple wave around the whole wheel + triumphant theme
+    $("hubMsg").textContent="JACKPOT! KSh "+(d.jackpot/100).toLocaleString();
+    $("hubNum").textContent="JP";
+    lightsRainbow(); sfx.jackpot(); setMusic("jackpot");
+    if(navigator.vibrate) navigator.vibrate([200,80,200,80,400]);
+    await new Promise(r=>setTimeout(r,4200));
+    stopLights(); stopMusic();
+  } else if(d.key==="bonus" && d.bonus){
+    // BONUS: purple breathing lights + mysterious theme through the pick game
+    $("hubMsg").textContent="\u{1F48E} DIAMOND BONUS!";
+    lightsPurplePulse(); sfx.bigWin(); setMusic("bonus");
+    if(navigator.vibrate) navigator.vibrate([150,60,150]);
+    await new Promise(r=>setTimeout(r,900));
+    await playBonus(d.bonus.token);
+    stopLights(); stopMusic();
+  } else if(d.key==="respin"){
+    // FREE SPIN: green blink, brief
+    $("hubMsg").textContent="\u{1F48E} FREE SPIN!";
+    lightsGreenFlash(); sfx.win();
+    if(navigator.vibrate) navigator.vibrate([100,50,100]);
+    await new Promise(r=>setTimeout(r,1100));
+    stopLights();
+  } else if(d.payout>0){
+    // WIN: only the winning slot pulses gold
+    $("hubMsg").innerHTML="WINNER! KSh "+(d.payout/100).toLocaleString()+
+      (d.tax>0?"<br><span style='font-size:9px'>after KSh "+(d.tax/100).toLocaleString()+" tax</span>":"");
+    lightsWinner(d.slot);
+    if(d.payout>=100000) sfx.bigWin(); else sfx.win();
+    if(navigator.vibrate) navigator.vibrate([80,40,80]);
+    await new Promise(r=>setTimeout(r,1600));
+    stopLights();
+  } else {
+    // NO WIN: lights out, and say what actually landed
+    stopLights();
+    const landed = ANIMALS[WHEEL[d.slot]];
+    const label = (landed && !landed.star && WHEEL[d.slot] !== "diamond" && WHEEL[d.slot] !== "allprize")
+      ? landed.n.charAt(0) + landed.n.slice(1).toLowerCase() + " — not your pick"
+      : (isRespin ? "Free spin — no win" : "No win — try again");
+    $("hubMsg").textContent = label;
+    sfx.lose();
+  }
+}
+
+/* ---- spin with light chase ---- */
+$("spinBtn").onclick = async ()=>{
+  if(spinning) return;
+  if(!Object.keys(bets).length){ $("hubMsg").textContent="Tap a symbol to bet first"; sfx.error(); return; }
+  ac(); // unlock audio on user gesture (browsers block autoplay before this)
+  spinning=true; $("spinBtn").disabled=true; $("hubMsg").textContent="";
+  sfx.spin();
+  try{
+    const d = await api("spin",{bets});
+    await showOutcome(d,false);
+    if(d.respin) await showOutcome(d.respin,true);
+    setBalance(d.balance);
+    if(d.pool!=null) $("jackpotPool").textContent = "KSh " + (d.pool/100).toLocaleString("en-KE");
+    if(d.live===false) applyMode(false); else refreshWinners();
+  }catch(e){ stopLights(); stopMusic(); $("hubMsg").textContent=e.message; sfx.error(); }
+  clearBets(); spinning=false; $("spinBtn").disabled=false;
+  setMusic("idle");                        // ambient loop returns between rounds
+};
+
+function chase(target){
+  return new Promise(res=>{
+    stopLights();
+    setMusic("spin");                       // driving loop while the wheel runs
+    const total = WHEEL.length*3 + target;
+    let i=0, delay=40;
+    (function step(){
+      slots.forEach(s=>s.classList.remove("lit"));
+      slots[i%WHEEL.length].classList.add("lit");
+      $("hubNum").textContent = String(i%WHEEL.length).padStart(2,"0");
+      sfx.tick();
+      if(i>=total){
+        stopMusic();                        // music stops exactly where the wheel stops
+        return setTimeout(res,400);
+      }
+      i++; delay = i>total-10 ? delay+35 : delay;
+      setTimeout(step, delay);
+    })();
+  });
+}
+
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){ stopMusic(); } else if(!spinning && soundOn){ setMusic("idle"); }
+});
+
+boot(); refreshPool(); refreshWinners();
+setInterval(refreshPool, 15000); setInterval(refreshWinners, 20000);
+</script>
+</body>
+</html>
