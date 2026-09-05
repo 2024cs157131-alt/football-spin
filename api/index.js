@@ -1,19 +1,28 @@
 /**
- * Safari Spin — Paystack (KES / M-Pesa) + Postgres backend for Vercel
+ * Safari Spin — Postgres backend for Vercel
  *
- * Collections use Paystack's Transaction API (mobile money + card); payouts use
- * Paystack Transfers to M-Pesa. Paystack signs its webhooks, so wallet credits
- * only ever happen from a verified webhook or a server-side verify call.
+ * DEPOSITS   : your own M-Pesa paybill via Daraja (STK push + direct C2B).
+ * WITHDRAWALS: Paystack Transfers to the player's registered M-Pesa number.
  *
- * Env: DATABASE_URL, APP_SECRET, BASE_URL,
- *      PAYSTACK_SECRET  (sk_test_... then sk_live_...)
+ * Env: DATABASE_URL, APP_SECRET, BASE_URL, CALLBACK_TOKEN,
+ *      MPESA_ENV, MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET,
+ *      MPESA_SHORTCODE, MPESA_PASSKEY,
+ *      PAYSTACK_SECRET (sk_test_... then sk_live_...),
  *      ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET
  */
 const express = require("express");
 const crypto = require("crypto");
 const { Pool } = require("pg");
 
-const { DATABASE_URL, APP_SECRET, BASE_URL, PAYSTACK_SECRET } = process.env;
+const {
+  DATABASE_URL, APP_SECRET, BASE_URL, PAYSTACK_SECRET, CALLBACK_TOKEN,
+  MPESA_ENV = "sandbox", MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET,
+  MPESA_SHORTCODE, MPESA_PASSKEY,
+} = process.env;
+
+const DARAJA = MPESA_ENV === "production"
+  ? "https://api.safaricom.co.ke"
+  : "https://sandbox.safaricom.co.ke";
 
 const PS = "https://api.paystack.co";
 const psHeaders = {
@@ -49,7 +58,7 @@ async function init() {
          ('live_mode','true'),('withdrawals_enabled','true'),
          ('wht_enabled','true'),('wht_rate','20'),('wht_threshold','0'),
          ('excise_rate','15'),('betting_tax_rate','15'),('corp_tax_rate','30'),
-         ('target_rtp','32')
+         ('target_rtp','32'),('target_net','30')
         ON CONFLICT DO NOTHING`,
       `CREATE TABLE IF NOT EXISTS expenses(
         id SERIAL PRIMARY KEY, category TEXT, amount BIGINT, note TEXT, created BIGINT)`,
@@ -140,6 +149,18 @@ function applyWHT(grossPayout, stake, st) {
   return { net: grossPayout - tax, tax };
 }
 
+/* ---------- Daraja auth token (cached) ---------- */
+let darajaCache = { v: null, exp: 0 };
+async function darajaToken() {
+  if (darajaCache.v && Date.now() < darajaCache.exp) return darajaCache.v;
+  const basic = Buffer.from(`${MPESA_CONSUMER_KEY}:${MPESA_CONSUMER_SECRET}`).toString("base64");
+  const r = await fetch(`${DARAJA}/oauth/v1/generate?grant_type=client_credentials`, {
+    headers: { Authorization: `Basic ${basic}` } }).then(x => x.json());
+  if (!r.access_token) throw new Error("Daraja auth failed");
+  darajaCache = { v: r.access_token, exp: Date.now() + 50 * 60 * 1000 };
+  return r.access_token;
+}
+
 /* ---------- game definition ----------
  * Wildlife theme (no trademarks). The 24-slot WHEEL is animation only;
  * real odds live in the weighted OUTCOMES table.
@@ -151,9 +172,11 @@ function applyWHT(grossPayout, stake, st) {
  */
 /* Slots 0 and 1 (top of the wheel) are the STAR — a special symbol, not an
  * animal — paying 50x and 100x. The rest are the Big Five plus two commons. */
-const WHEEL = ["star","star","allprize","zebra","lion","leopard","leopard","diamond",
-  "zebra","buffalo","buffalo","giraffe","elephant","elephant","giraffe","lion","lion","rhino",
-  "rhino","diamond","zebra","giraffe","buffalo","leopard"];
+/* 24 display slots. Diamond has SEVEN positions spread around the wheel so a
+ * non-winning spin doesn't stop on the same spot every time. */
+const WHEEL = ["star","star","allprize","zebra","diamond","giraffe","leopard","diamond",
+  "zebra","buffalo","diamond","lion","elephant","diamond","giraffe","rhino","diamond","leopard",
+  "zebra","diamond","giraffe","buffalo","diamond","allprize"];
 /* Weights are derived from the target RTP set in the admin console, so the
  * payout rate can be tuned without editing code. Base table = 32% RTP; every
  * animal/all-prize weight scales by k, and `diamond` absorbs the difference,
@@ -163,17 +186,22 @@ const WHEEL = ["star","star","allprize","zebra","lion","leopard","leopard","diam
  * multipliers; cheetah, giraffe and zebra are the common, low-paying animals.
  * Weights are set so EVERY animal returns the same RTP — a bigger multiplier
  * simply lands more rarely, so no bet is better than another. */
+/* A player loses whenever the wheel misses THEIR pick, not only on diamond —
+ * so most of the old dead weight has been moved onto the animals. The wheel now
+ * lands on a real symbol ~42% of the time instead of ~17%, and a single-animal
+ * bettor wins about twice as often. Every bet still returns identical RTP; the
+ * price of the livelier wheel is lower top multipliers. */
 const BASE = [
-  { key: "star",     odds: 50,  w: 374,  scale: true },   // STAR — top two slots
-  { key: "star",     odds: 100, w: 40,   scale: true },   // STAR — top prize
-  { key: "elephant", odds: 30,  w: 756,  scale: true },   // Big Five
-  { key: "rhino",    odds: 25,  w: 907,  scale: true },   // Big Five
-  { key: "lion",     odds: 20,  w: 1134, scale: true },   // Big Five
-  { key: "buffalo",  odds: 15,  w: 1512, scale: true },   // Big Five
-  { key: "leopard",  odds: 12,  w: 1890, scale: true },   // Big Five
-  { key: "giraffe",  odds: 8,   w: 2835, scale: true },
-  { key: "zebra",    odds: 5,   w: 4536, scale: true },
-  { key: "allprize", odds: 2,   w: 1500, scale: true },
+  { key: "star",     odds: 50,  w: 334,   scale: true },  // STAR — top two slots
+  { key: "star",     odds: 100, w: 40,    scale: true },  // STAR — top prize
+  { key: "elephant", odds: 15,  w: 1379,  scale: true },  // Big Five
+  { key: "rhino",    odds: 10,  w: 2068,  scale: true },  // Big Five
+  { key: "lion",     odds: 6,   w: 3447,  scale: true },  // Big Five
+  { key: "buffalo",  odds: 4,   w: 5170,  scale: true },  // Big Five
+  { key: "leopard",  odds: 3,   w: 6893,  scale: true },  // Big Five
+  { key: "giraffe",  odds: 2.5, w: 8272,  scale: true },
+  { key: "zebra",    odds: 2,   w: 10340, scale: true },
+  { key: "allprize", odds: 2,   w: 2500,  scale: true },
   { key: "jackpot",  odds: 0,   w: 5 },      // ~1 in 20,000
   { key: "bonus",    odds: 0,   w: 462 },    // DIAMOND BONUS: pick 3 of 9
   { key: "respin",   odds: 0,   w: 1000 },   // DIAMOND RESPIN: one free spin
@@ -268,66 +296,132 @@ app.get("/api/me", auth, async (req, res) => {
     wd_max: WD_MAX_MPESA, wd_daily: WD_DAILY_LIMIT });
 });
 
-/* ---------- deposit: Paystack transaction (M-Pesa / card) ---------- */
+/* ---------- deposit: STK push to your paybill ---------- */
 app.post("/api/deposit/init", auth, async (req, res) => {
   const st = await getSettings();
   if (!st.live_mode) return res.status(403).json({ error: "Demo mode is on — deposits are paused." });
   if (req.user.suspended) return res.status(403).json({ error: "Account under review. Contact support." });
   const amountKes = Math.floor(Number(req.body.amount));
+  const phone = req.body.phone ? msisdn(req.body.phone) : req.user.phone;
   if (!amountKes || amountKes < 100) return res.status(400).json({ error: "Minimum deposit is KSh 100." });
   if (amountKes > 100000) return res.status(400).json({ error: "Maximum deposit is KSh 100,000." });
+  if (!phone) return res.status(400).json({ error: "Enter a valid Safaricom number, e.g. 07XX XXX XXX." });
 
-  const reference = "dep_" + crypto.randomBytes(10).toString("hex");
+  const ts = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const password = Buffer.from(MPESA_SHORTCODE + MPESA_PASSKEY + ts).toString("base64");
   let r;
   try {
-    r = await fetch(`${PS}/transaction/initialize`, {
-      method: "POST", headers: psHeaders,
+    r = await fetch(`${DARAJA}/mpesa/stkpush/v1/processrequest`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${await darajaToken()}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: req.user.email,
-        amount: amountKes * 100,            // Paystack expects the minor unit
-        currency: "KES",
-        reference: reference,
-        channels: ["mobile_money", "card"], // mobile_money drives the M-Pesa prompt in Kenya
-        callback_url: `${BASE_URL}/`,
-        metadata: { user_id: req.user.id, phone: req.user.phone },
+        BusinessShortCode: MPESA_SHORTCODE, Password: password, Timestamp: ts,
+        TransactionType: "CustomerPayBillOnline", Amount: amountKes,
+        PartyA: phone, PartyB: MPESA_SHORTCODE, PhoneNumber: phone,
+        CallBackURL: `${BASE_URL}/api/mpesa/stk/${CALLBACK_TOKEN}`,
+        AccountReference: "SPIN" + req.user.id, TransactionDesc: "Wallet deposit",
       }),
     }).then(x => x.json());
-  } catch (e) { return res.status(502).json({ error: "Could not reach Paystack. Try again." }); }
+  } catch (e) { return res.status(502).json({ error: "Could not reach M-Pesa. Try again." }); }
 
-  if (!r || !r.status || !r.data)
-    return res.status(502).json({ error: (r && r.message) || "Could not start the payment. Try again." });
+  if (!r || r.ResponseCode !== "0")
+    return res.status(502).json({ error: (r && r.errorMessage) || "Could not send the M-Pesa prompt. Try again." });
 
   await pool.query(
     "INSERT INTO tx(user_id,kind,amount,ref,status,phone,created) VALUES($1,'deposit',$2,$3,'pending',$4,$5)",
-    [req.user.id, amountKes * 100, r.data.reference, req.user.phone, Date.now()]);
-  res.json({ ok: true, authorization_url: r.data.authorization_url, reference: r.data.reference,
-             message: "Finish the payment in the Paystack window, then approve the M-Pesa prompt." });
+    [req.user.id, amountKes * 100, r.CheckoutRequestID, phone, Date.now()]);
+  res.json({ ok: true, message: "Check your phone and enter your M-Pesa PIN." });
 });
 
-/* Credit the wallet. Shared by the webhook and the verify fallback, and
- * guarded so a transaction can never be credited twice. */
-async function creditDeposit(reference, paidMinor) {
+/* STK result callback — wallets are only credited from here. */
+app.post("/api/mpesa/stk/:token", async (req, res) => {
+  if (req.params.token !== CALLBACK_TOKEN) return res.sendStatus(403);
+  const cb = req.body && req.body.Body && req.body.Body.stkCallback;
+  if (!cb) return res.sendStatus(400);
   const t = (await pool.query(
-    "SELECT * FROM tx WHERE ref=$1 AND kind='deposit' AND status='pending'", [reference])).rows[0];
-  if (!t) return false;
-  const cents = Number(paidMinor) || Number(t.amount);
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const upd = await client.query(
-      "UPDATE tx SET status='success', amount=$2 WHERE id=$1 AND status='pending'", [t.id, cents]);
-    if (!upd.rowCount) throw new Error("already");
-    await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [t.user_id, cents]);
-    // a completed payment confirms the account holder controls the payment method
-    await client.query(
-      "UPDATE users SET phone_verified=true WHERE id=$1 AND phone_verified=false", [t.user_id]);
-    await client.query("COMMIT");
-  } catch (e) { await client.query("ROLLBACK"); client.release(); return false; }
-  client.release();
-  return true;
-}
+    "SELECT * FROM tx WHERE ref=$1 AND status='pending'", [cb.CheckoutRequestID])).rows[0];
+  if (t) {
+    if (cb.ResultCode === 0) {
+      const item = cb.CallbackMetadata && cb.CallbackMetadata.Item;
+      const paid = item && item.find(i => i.Name === "Amount");
+      const cents = paid ? Math.round(Number(paid.Value) * 100) : Number(t.amount);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const upd = await client.query(
+          "UPDATE tx SET status='success', amount=$2 WHERE id=$1 AND status='pending'", [t.id, cents]);
+        if (!upd.rowCount) throw new Error("already");
+        await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [t.user_id, cents]);
+        await client.query(
+          "UPDATE users SET phone_verified=true WHERE id=$1 AND phone=$2 AND phone_verified=false",
+          [t.user_id, t.phone]);
+        await client.query("COMMIT");
+      } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
+    } else {
+      await pool.query("UPDATE tx SET status='failed' WHERE id=$1", [t.id]);
+    }
+  }
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+});
 
-/* ---------- Paystack webhook (HMAC-SHA512 over the raw body) ---------- */
+/* ---------- C2B: paying the paybill directly from the M-Pesa menu ----------
+ * Account number is SPIN<user id>. Register once per environment:
+ *   GET /api/mpesa/c2b/register/<CALLBACK_TOKEN>
+ */
+app.get("/api/mpesa/c2b/register/:token", async (req, res) => {
+  if (req.params.token !== CALLBACK_TOKEN) return res.sendStatus(403);
+  const r = await fetch(`${DARAJA}/mpesa/c2b/v2/registerurl`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await darajaToken()}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ShortCode: MPESA_SHORTCODE, ResponseType: "Completed",
+      ConfirmationURL: `${BASE_URL}/api/mpesa/c2b/confirm/${CALLBACK_TOKEN}`,
+      ValidationURL: `${BASE_URL}/api/mpesa/c2b/validate/${CALLBACK_TOKEN}`,
+    }),
+  }).then(x => x.json());
+  res.json(r);
+});
+
+app.post("/api/mpesa/c2b/validate/:token", async (req, res) => {
+  if (req.params.token !== CALLBACK_TOKEN) return res.sendStatus(403);
+  const userId = parseInt(String((req.body || {}).BillRefNumber || "").replace(/\D/g, ""), 10);
+  const amt = Number((req.body || {}).TransAmount || 0);
+  const u = userId ? (await pool.query("SELECT id FROM users WHERE id=$1", [userId])).rows[0] : null;
+  if (!u) return res.json({ ResultCode: "C2B00012", ResultDesc: "Rejected" });
+  if (amt < 100 || amt > 100000) return res.json({ ResultCode: "C2B00013", ResultDesc: "Rejected" });
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+});
+
+app.post("/api/mpesa/c2b/confirm/:token", async (req, res) => {
+  if (req.params.token !== CALLBACK_TOKEN) return res.sendStatus(403);
+  const b = req.body || {};
+  const userId = parseInt(String(b.BillRefNumber || "").replace(/\D/g, ""), 10);
+  const cents = Math.round(Number(b.TransAmount) * 100);
+  if (userId && cents > 0 && b.TransID) {
+    const u = (await pool.query("SELECT id FROM users WHERE id=$1", [userId])).rows[0];
+    if (u) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const ins = await client.query(
+          `INSERT INTO tx(user_id,kind,amount,ref,status,phone,created)
+           VALUES($1,'deposit',$2,$3,'success',$4,$5) ON CONFLICT (ref) DO NOTHING`,
+          [userId, cents, b.TransID, String(b.MSISDN || ""), Date.now()]);
+        if (ins.rowCount) {                    // idempotent on Safaricom's TransID
+          await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [userId, cents]);
+          const payer = msisdn(b.MSISDN);
+          if (payer) await client.query(
+            "UPDATE users SET phone_verified=true WHERE id=$1 AND phone=$2 AND phone_verified=false",
+            [userId, payer]);
+        }
+        await client.query("COMMIT");
+      } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
+    }
+  }
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+});
+
+/* ---------- Paystack webhook: withdrawal (transfer) results only ---------- */
 app.post("/api/paystack/webhook", async (req, res) => {
   const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
   const expected = crypto.createHmac("sha512", PAYSTACK_SECRET || "").update(raw).digest("hex");
@@ -338,8 +432,6 @@ app.post("/api/paystack/webhook", async (req, res) => {
 
   let ev; try { ev = JSON.parse(raw.toString()); } catch (e) { return res.sendStatus(400); }
   const d = ev.data || {};
-
-  if (ev.event === "charge.success") await creditDeposit(d.reference, d.amount);
 
   if (ev.event === "transfer.success")
     await pool.query("UPDATE tx SET status='success' WHERE ref=$1 AND kind='withdraw'", [d.reference]);
@@ -364,24 +456,8 @@ app.post("/api/paystack/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-/* Fallback for when the player returns from checkout — still confirmed
- * server-side against Paystack. The webhook remains the primary path. */
-app.get("/api/deposit/verify/:ref", auth, async (req, res) => {
-  const t = (await pool.query(
-    "SELECT * FROM tx WHERE ref=$1 AND user_id=$2", [req.params.ref, req.user.id])).rows[0];
-  if (!t) return res.status(404).json({ error: "Unknown transaction." });
-  try {
-    const r = await fetch(`${PS}/transaction/verify/${encodeURIComponent(req.params.ref)}`,
-      { headers: psHeaders }).then(x => x.json());
-    if (r && r.status && r.data && r.data.status === "success")
-      await creditDeposit(req.params.ref, r.data.amount);
-  } catch (e) { /* fall through and just return the balance */ }
-  const u = await pool.query("SELECT balance FROM users WHERE id=$1", [req.user.id]);
-  res.json({ balance: Number(u.rows[0].balance) });
-});
-
-/* ---------- Paystack payout helper (shared with admin approvals) ----------
- * Returns {ok:true} or {ok:false, error}. Never touches balances — the caller
+/* ---------- Paystack payout helper (also used by admin approvals) ----------
+ * Returns {ok:true} or {ok:false,error}. Never touches balances — the caller
  * has already debited and is responsible for refunding on failure. */
 async function sendTransfer({ name, phone, cents, ref }) {
   let rcp;
@@ -529,11 +605,13 @@ async function settle(user, bets, stake, live, st, freeSpin) {
   let taxTaken = 0, netPayout = 0;
   try {
     await client.query("BEGIN");
-    if (hit.key === "jackpot" && live) {
-      const j = await client.query("SELECT pool FROM jackpot WHERE id=1 FOR UPDATE");
+    if (hit.key === "jackpot") {
+      // Demo plays identically to the real game: the player still "wins" the
+      // displayed pool in demo credit, but the real pool is never touched.
+      const j = await client.query("SELECT pool FROM jackpot WHERE id=1" + (live ? " FOR UPDATE" : ""));
       jackpotWin = Number(j.rows[0].pool) + contribution;
       gross += jackpotWin;
-      await client.query("UPDATE jackpot SET pool=$1 WHERE id=1", [JACKPOT_SEED]);
+      if (live) await client.query("UPDATE jackpot SET pool=$1 WHERE id=1", [JACKPOT_SEED]);
     } else if (live) {
       await client.query("UPDATE jackpot SET pool=pool+$1 WHERE id=1", [contribution]);
     }
@@ -576,9 +654,10 @@ app.post("/api/spin", auth, async (req, res) => {
   const st = await getSettings();
   const live = st.live_mode;
   if (req.user.suspended && live) return res.status(403).json({ error: "Account under review. Contact support." });
+  const DEMO_BANKROLL = 200000; // KSh 2,000 of demo credit
   if (!live && Number(req.user.demo_balance) < stake) {
-    await pool.query("UPDATE users SET demo_balance=100000 WHERE id=$1", [req.user.id]);
-    req.user.demo_balance = 100000;
+    await pool.query("UPDATE users SET demo_balance=$2 WHERE id=$1", [req.user.id, DEMO_BANKROLL]);
+    req.user.demo_balance = DEMO_BANKROLL;
   }
   const curBal = live ? req.user.balance : Number(req.user.demo_balance);
   if (stake > curBal) return res.status(400).json({ error: "Insufficient balance. Deposit to play." });
