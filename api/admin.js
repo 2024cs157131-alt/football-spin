@@ -11,10 +11,23 @@ const crypto = require("crypto");
 
 module.exports = function mountAdmin(app, pool, sign, verify) {
   const { ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET } = process.env;
-  if (!ADMIN_PATH || !ADMIN_PASSWORD || !ADMIN_TOTP_SECRET) {
-    console.warn("Admin panel disabled: set ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET");
+
+  /* TEMPORARY 2FA BYPASS — recovery only.
+   * Set ADMIN_TOTP_DISABLED=true to sign in with the password alone, e.g. when
+   * the authenticator secret has been lost. This leaves the console protected
+   * by one factor and a secret URL, so it is materially weaker: set a new
+   * ADMIN_TOTP_SECRET, re-add it to your authenticator, then DELETE this
+   * variable. The lockout window is also tightened while it is on. */
+  const TOTP_DISABLED = String(process.env.ADMIN_TOTP_DISABLED || "").toLowerCase() === "true";
+
+  if (!ADMIN_PATH || !ADMIN_PASSWORD || (!ADMIN_TOTP_SECRET && !TOTP_DISABLED)) {
+    console.warn("Admin panel disabled: set ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET " +
+                 "(or ADMIN_TOTP_DISABLED=true for temporary password-only recovery)");
     return;
   }
+  if (TOTP_DISABLED)
+    console.warn("SECURITY: admin 2FA is DISABLED (ADMIN_TOTP_DISABLED=true). " +
+                 "Restore ADMIN_TOTP_SECRET and remove this variable as soon as you can.");
 
   /* ----- TOTP (RFC 6238, no dependencies) ----- */
   function b32decode(str) {
@@ -37,7 +50,7 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
   }
   // +/- 2 steps = 60s either side. Phone clocks drift; a tighter window is the
   // usual reason a correct-looking code is rejected.
-  const totpOk = code => [-2, -1, 0, 1, 2].some(w => {
+  const totpOk = code => TOTP_DISABLED ? true : [-2, -1, 0, 1, 2].some(w => {
     try {
       return crypto.timingSafeEqual(
         Buffer.from(totp(ADMIN_TOTP_SECRET, w)),
@@ -53,7 +66,8 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
   /* ----- rate limiting (DB-backed, survives serverless cold starts) -----
    * Counted per client IP, not globally: one bot probing the URL should not be
    * able to lock the real operator out. Cleared on every successful login. */
-  const MAX_ATTEMPTS = 8, WINDOW_MS = 10 * 60 * 1000;
+  // fewer tries allowed while the second factor is off
+  const MAX_ATTEMPTS = TOTP_DISABLED ? 4 : 8, WINDOW_MS = 10 * 60 * 1000;
   const clientIp = req =>
     String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
     (req.socket && req.socket.remoteAddress) || "unknown";
@@ -149,14 +163,15 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
 
     // A good login clears the slate, so earlier typos can't lock you out later.
     await clearAttempts(ip);
-    res.json({ token: sign({ role: "admin", exp: Date.now() + 60 * 60 * 1000 }) });
+    const ttl = TOTP_DISABLED ? 15 * 60 * 1000 : 60 * 60 * 1000;
+    res.json({ token: sign({ role: "admin", exp: Date.now() + ttl }) });
   }));
 
   /* Clock check: compare your phone against the server so drift is obvious.
    * Returns no secrets and needs no auth. */
   app.get(`${P}/time`, (_req, res) => {
     res.json({ server_time: new Date().toISOString(), epoch_ms: Date.now(),
-               totp_step: Math.floor(Date.now() / 30000) });
+               totp_step: Math.floor(Date.now() / 30000), totp_disabled: TOTP_DISABLED });
   });
 
   /* ----- dashboard stats ----- */
@@ -543,9 +558,26 @@ async function login(){
 
 /* If this device's clock is off, authenticator codes fail even when they look
  * right on screen. Compare against the server and say so plainly. */
+/* Ask the server whether 2FA is currently bypassed, and reflect that in the UI
+   so the state is never a surprise. */
+async function checkMode(){
+  try{
+    const r=await fetch(B+"/time").then(x=>x.json());
+    if(r.totp_disabled){
+      document.getElementById("code").style.display="none";
+      const w=document.getElementById("clockWarn");
+      w.innerHTML="<b>Two-factor authentication is OFF.</b> This console is protected by the "+
+        "password and secret URL only. Set a new ADMIN_TOTP_SECRET, add it to your authenticator, "+
+        "then remove ADMIN_TOTP_DISABLED.";
+      w.style.display="block";
+    }
+  }catch(e){}
+}
+
 async function checkClock(){
   try{
     const r=await fetch(B+"/time").then(x=>x.json());
+    if(r.totp_disabled) return;          // no code required, so drift is irrelevant
     const skew=Math.abs(Date.now()-r.epoch_ms)/1000;
     if(skew>20){
       document.getElementById("clockWarn").innerHTML=
@@ -559,6 +591,18 @@ async function checkClock(){
 async function show(){
   document.getElementById("login").style.display="none";
   document.getElementById("panel").style.display="block";
+  try{
+    const t=await fetch(B+"/time").then(x=>x.json());
+    if(t.totp_disabled){
+      const b=document.createElement("div");
+      b.style.cssText="background:#5a1d1d;border:1px solid #da3633;border-radius:8px;"+
+        "padding:10px;margin-bottom:12px;font-size:13px";
+      b.innerHTML="\u26A0\uFE0F <b>2FA is disabled</b> \u2014 password-only access. "+
+        "Sessions last 15 minutes. Restore ADMIN_TOTP_SECRET and delete ADMIN_TOTP_DISABLED.";
+      const p=document.getElementById("panel");
+      p.insertBefore(b,p.firstChild);
+    }
+  }catch(e){}
   await refresh();loadPlayers();loadTx();loadPesalink();loadExpenses();
 }
 
@@ -759,6 +803,7 @@ async function loadTx(){
   }).join("");
 }
 
+checkMode();
 document.getElementById("loginBtn").onclick=login;
 ["pw","code"].forEach(function(id){
   document.getElementById(id).addEventListener("keydown",function(e){ if(e.key==="Enter") login(); });
