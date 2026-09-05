@@ -58,13 +58,63 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
     String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
     (req.socket && req.socket.remoteAddress) || "unknown";
 
-  async function attemptsFor(ip) {
-    const cutoff = Date.now() - WINDOW_MS;
-    await pool.query("DELETE FROM admin_attempts WHERE ts < $1", [cutoff]);
-    const r = await pool.query(
-      "SELECT COUNT(*) c FROM admin_attempts WHERE ts >= $1 AND ip = $2", [cutoff, ip]);
-    return Number(r.rows[0].c);
+  let hasIpColumn = null;                    // probed once per cold start
+  async function ipColumnExists() {
+    if (hasIpColumn !== null) return hasIpColumn;
+    try {
+      const r = await pool.query(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_name='admin_attempts' AND column_name='ip' LIMIT 1`);
+      hasIpColumn = r.rowCount > 0;
+    } catch (e) { hasIpColumn = false; }
+    return hasIpColumn;
   }
+
+  /* Rate limiting must never be the reason a login fails outright: if the
+   * counter itself errors, we let the attempt through and log it. */
+  async function attemptsFor(ip) {
+    try {
+      const cutoff = Date.now() - WINDOW_MS;
+      await pool.query("DELETE FROM admin_attempts WHERE ts < $1", [cutoff]);
+      if (await ipColumnExists()) {
+        const r = await pool.query(
+          "SELECT COUNT(*) c FROM admin_attempts WHERE ts >= $1 AND ip = $2", [cutoff, ip]);
+        return Number(r.rows[0].c);
+      }
+      const r = await pool.query(
+        "SELECT COUNT(*) c FROM admin_attempts WHERE ts >= $1", [cutoff]);
+      return Number(r.rows[0].c);
+    } catch (e) {
+      console.error("admin rate-limit check failed (allowing attempt):", e.message);
+      return 0;
+    }
+  }
+
+  async function recordAttempt(ip) {
+    try {
+      if (await ipColumnExists())
+        await pool.query("INSERT INTO admin_attempts(ts,ip) VALUES($1,$2)", [Date.now(), ip]);
+      else
+        await pool.query("INSERT INTO admin_attempts(ts) VALUES($1)", [Date.now()]);
+    } catch (e) { console.error("admin attempt log failed:", e.message); }
+  }
+
+  async function clearAttempts(ip) {
+    try {
+      if (await ipColumnExists())
+        await pool.query("DELETE FROM admin_attempts WHERE ip = $1", [ip]);
+      else
+        await pool.query("DELETE FROM admin_attempts");
+    } catch (e) { console.error("admin attempt clear failed:", e.message); }
+  }
+
+  /* Wrap async handlers so a thrown error returns JSON instead of leaving the
+   * request hanging — Express 4 does not catch async rejections by itself. */
+  const wrap = fn => (req, res) => Promise.resolve(fn(req, res)).catch(err => {
+    console.error("admin route error:", err && err.stack || err);
+    if (!res.headersSent)
+      res.status(500).json({ error: "Server error: " + (err && err.message || "unknown") });
+  });
 
   function adminAuth(req, res, next) {
     const t = verify((req.headers.authorization || "").replace("Bearer ", ""));
@@ -76,7 +126,7 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
   const P = `/api/admin/${ADMIN_PATH}`;
 
   /* ----- login ----- */
-  app.post(`${P}/login`, async (req, res) => {
+  app.post(`${P}/login`, wrap(async (req, res) => {
     const ip = clientIp(req);
     const used = await attemptsFor(ip);
     if (used >= MAX_ATTEMPTS)
@@ -86,7 +136,7 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
     const okPw = pwOk(password), okCode = totpOk(code);
 
     if (!okPw || !okCode) {
-      await pool.query("INSERT INTO admin_attempts(ts,ip) VALUES($1,$2)", [Date.now(), ip]);
+      await recordAttempt(ip);
       // Which factor failed is logged for you but never returned to the client.
       console.warn("Admin login failed from " + ip +
         " — password " + (okPw ? "ok" : "WRONG") + ", code " + (okCode ? "ok" : "WRONG"));
@@ -98,9 +148,9 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
     }
 
     // A good login clears the slate, so earlier typos can't lock you out later.
-    await pool.query("DELETE FROM admin_attempts WHERE ip = $1", [ip]);
+    await clearAttempts(ip);
     res.json({ token: sign({ role: "admin", exp: Date.now() + 60 * 60 * 1000 }) });
-  });
+  }));
 
   /* Clock check: compare your phone against the server so drift is obvious.
    * Returns no secrets and needs no auth. */
@@ -448,17 +498,46 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
 <script>
 const B="__BASE__"; let T=sessionStorage.getItem("adm")||null; let S={};
 const K=c=>"KSh "+(c/100).toLocaleString("en-KE");
-const api=async(p,b)=>{const r=await fetch(B+p,{method:b?"POST":"GET",headers:{"Content-Type":"application/json",Authorization:"Bearer "+T},body:b?JSON.stringify(b):undefined});const d=await r.json();if(!r.ok)throw new Error(d.error||"Error");return d};
+const api=async(p,b)=>{
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),20000);   // never sit silent forever
+  let r;
+  try{
+    r=await fetch(B+p,{method:b?"POST":"GET",
+      headers:{"Content-Type":"application/json",Authorization:"Bearer "+T},
+      body:b?JSON.stringify(b):undefined, signal:ctrl.signal});
+  }catch(err){
+    clearTimeout(timer);
+    throw new Error(err.name==="AbortError"
+      ? "The server did not respond in 20s. It may be starting up \u2014 try again."
+      : "Network error: could not reach the server.");
+  }
+  clearTimeout(timer);
+  const text=await r.text();
+  let d=null; try{ d=text?JSON.parse(text):null; }catch(e){ d=null; }
+  if(!r.ok){
+    if(d&&d.error) throw new Error(d.error);
+    if(r.status===404) throw new Error("404 \u2014 admin path not found. Check ADMIN_PATH matches the URL.");
+    if(r.status===401) throw new Error("Not authorised. Sign in again.");
+    throw new Error("Server returned "+r.status+(text?" \u2014 "+text.slice(0,120):""));
+  }
+  if(d===null) throw new Error("Unexpected response from server (not JSON).");
+  return d;
+};
 
 async function login(){
+  const btn=document.getElementById("loginBtn"), err=document.getElementById("lerr");
+  btn.disabled=true; btn.textContent="Signing in\u2026"; err.textContent="";
   try{
     const d=await api("/login",{password:document.getElementById("pw").value,
       code:document.getElementById("code").value});
     T=d.token;sessionStorage.setItem("adm",T);show();
   }catch(e){
-    document.getElementById("lerr").textContent=e.message;
+    err.textContent=e.message||"Login failed (no details returned).";
     checkClock();                       // a wrong-looking code is often clock drift
     document.getElementById("code").value="";
+  }finally{
+    btn.disabled=false; btn.textContent="Sign in";
   }
 }
 
