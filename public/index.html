@@ -183,13 +183,12 @@
 
 <!-- deposit sheet -->
 <div class="sheet" id="depositSheet"><div class="card">
-  <h2>Deposit via M-Pesa</h2>
-  <label>M-Pesa number</label><input id="depPhone" inputmode="tel" placeholder="07XX XXX XXX">
+  <h2>Deposit</h2>
   <label>Amount (KSh 100 – 100,000)</label><input id="depAmount" type="number" min="100" max="100000" step="50" value="200">
   <div class="err" id="depErr"></div>
-  <p class="rg" id="paybillNote" style="text-align:left;margin-top:10px"></p>
+  <p class="rg" style="text-align:left;margin-top:10px">You'll be taken to Paystack to pay by M-Pesa or card. Your wallet credits automatically once the payment clears.</p>
   <div style="display:flex;gap:8px;margin-top:10px">
-    <button id="depGo">Send M-Pesa prompt</button>
+    <button id="depGo">Continue to payment</button>
     <button class="ghost" id="depCancel">Cancel</button>
   </div>
 </div></div>
@@ -438,18 +437,13 @@ async function refreshPool(){
     $("jackpotPool").textContent = "KSh " + (j.pool/100).toLocaleString("en-KE"); }catch(e){}
 }
 
-function showPaybill(id){
-  $("paybillNote").innerHTML = "Or pay the paybill directly from your M-Pesa menu — "+
-    "Account number: <b style='color:var(--gold)'>SPIN"+id+"</b>. Your wallet credits automatically.";
-}
 function applyAccount(me){
   myPhone = me.phone || "";
   const local = myPhone ? "0"+myPhone.slice(3) : "";
-  $("depPhone").value = local;
   if(me.wht>0) $("wdDest").dataset.wht=me.wht;
   $("wdDest").textContent = me.phone_verified
-    ? "Winnings are sent to your registered number "+local+"."
-    : "Withdrawals unlock after your first deposit from your registered number "+local+" (this verifies it's yours).";
+    ? "Winnings go to your registered M-Pesa number "+local+". To change it, contact support."
+    : "Withdrawals unlock after your first successful deposit.";
 }
 function applyMode(live){
   isLive = live;
@@ -461,7 +455,7 @@ function applyMode(live){
 /* ---- auth ---- */
 async function boot(){
   if(!token) return;
-  try{ const me = await api("me"); setBalance(me.balance); showPaybill(me.id);
+  try{ const me = await api("me"); setBalance(me.balance);
     applyMode(me.live); applyAccount(me);
     close_("authSheet"); $("hubMsg").textContent="Place your bets"; }
   catch(e){ token=null; localStorage.removeItem("fs_token"); }
@@ -469,7 +463,7 @@ async function boot(){
 $("loginBtn").onclick = async ()=>{
   try{ const d=await api("login",{email:$("email").value,password:$("password").value});
     token=d.token; localStorage.setItem("fs_token",token); setBalance(d.balance);
-    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    const me=await api("me"); applyMode(me.live); applyAccount(me);
     close_("authSheet"); $("hubMsg").textContent="Place your bets"; sfx.chip();
   }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
 };
@@ -478,7 +472,7 @@ $("registerBtn").onclick = async ()=>{
       phone:$("regPhone").value,full_name:$("regName").value,id_number:$("regId").value,
       over18:$("over18").checked});
     token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
-    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    const me=await api("me"); applyMode(me.live); applyAccount(me);
     close_("authSheet"); $("hubMsg").textContent="Deposit to play"; sfx.chip();
   }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
 };
@@ -488,21 +482,25 @@ $("depositBtn").onclick=()=>open_("depositSheet");
 $("depCancel").onclick=()=>close_("depositSheet");
 $("depGo").onclick = async ()=>{
   try{
-    const d = await api("deposit/init",{amount: Number($("depAmount").value), phone: $("depPhone").value});
+    const d = await api("deposit/init",{amount: Number($("depAmount").value)});
     $("depErr").textContent = d.message;
+    window.open(d.authorization_url, "_blank");
     const before = balance;
     const poll = setInterval(async ()=>{
-      const me = await api("me");
-      if(me.balance > before){ setBalance(me.balance); clearInterval(poll);
-        close_("depositSheet"); $("depErr").textContent="";
-        $("hubMsg").textContent="Credited. Good luck!"; sfx.win(); }
-    }, 4000);
-    setTimeout(()=>clearInterval(poll), 180000);
+      try{
+        // ask the server to confirm with Paystack, then read the balance back
+        const v = await api("deposit/verify/"+encodeURIComponent(d.reference));
+        if(v.balance > before){ setBalance(v.balance); clearInterval(poll);
+          close_("depositSheet"); $("depErr").textContent="";
+          $("hubMsg").textContent="Credited. Good luck!"; sfx.win(); }
+      }catch(e){}
+    }, 5000);
+    setTimeout(()=>clearInterval(poll), 300000);
   }catch(e){ $("depErr").textContent=e.message; sfx.error(); }
 };
 
 /* ---- withdraw ---- */
-$("withdrawBtn").onclick = ()=>open_("withdrawSheet");
+$("withdrawBtn").onclick = ()=>{ $("wdErr").textContent=""; open_("withdrawSheet"); };
 $("wdCancel").onclick=()=>close_("withdrawSheet");
 $("wdGo").onclick = async ()=>{
   const amt=Number($("wdAmount").value);
