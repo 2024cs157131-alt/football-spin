@@ -490,7 +490,8 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
 </div>
 <div id="panel" style="display:none">
   <div class="row" style="justify-content:space-between"><h1>Operator console</h1>
-    <span><span class="badge" id="modeBadge"></span> <span class="badge" id="wdBadge"></span></span></div>
+    <span><span class="badge" id="modeBadge"></span> <span class="badge" id="wdBadge"></span>
+      <button id="logoutBtn" style="padding:5px 12px;font-size:12px;margin-left:8px">Sign out</button></span></div>
 
   <h2>Today & totals</h2><div class="cards" id="cards"></div>
 
@@ -593,9 +594,9 @@ const api=async(p,b)=>{
   const text=await r.text();
   let d=null; try{ d=text?JSON.parse(text):null; }catch(e){ d=null; }
   if(!r.ok){
+    if(r.status===401){ logout("Your session expired. Please sign in again."); throw new Error("Session expired."); }
     if(d&&d.error) throw new Error(d.error);
     if(r.status===404) throw new Error("404 \u2014 admin path not found. Check ADMIN_PATH matches the URL.");
-    if(r.status===401) throw new Error("Not authorised. Sign in again.");
     throw new Error("Server returned "+r.status+(text?" \u2014 "+text.slice(0,120):""));
   }
   if(d===null) throw new Error("Unexpected response from server (not JSON).");
@@ -649,6 +650,28 @@ async function checkClock(){
     }
   }catch(e){}
 }
+
+/* Return cleanly to the login form. Without this an expired session left the
+   panel on screen with dead data and no way back except a fresh browser. */
+function logout(msg){
+  T = null;
+  try{ sessionStorage.removeItem("adm"); }catch(e){}
+  if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
+  const panel = document.getElementById("panel");
+  panel.style.display = "none";
+  // drop any stale rows so nothing from the old session lingers
+  ["daily","players","tx","exp","pl","audit"].forEach(function(id){
+    const t = document.getElementById(id);
+    if(t && t.tBodies && t.tBodies[0]) t.tBodies[0].innerHTML = "";
+  });
+  const cards = document.getElementById("cards"); if(cards) cards.innerHTML = "";
+  document.getElementById("login").style.display = "block";
+  document.getElementById("lerr").textContent = msg || "";
+  document.getElementById("pw").value = "";
+  const c = document.getElementById("code"); if(c) c.value = "";
+}
+
+let refreshTimer = null;
 
 async function show(){
   document.getElementById("login").style.display="none";
@@ -867,6 +890,7 @@ async function loadTx(){
 
 checkMode();
 document.getElementById("loginBtn").onclick=login;
+document.getElementById("logoutBtn").onclick=function(){ logout("Signed out."); };
 document.getElementById("diagBtn").onclick=async function(){
   var out=document.getElementById("diagOut");
   out.style.display="block"; out.textContent="Checking\u2026";
@@ -912,7 +936,9 @@ document.getElementById("q").addEventListener("keydown",function(e){if(e.key==="
 document.getElementById("exportBtn").onclick=exportTx;
 
 if(T)show();
-setInterval(function(){
-  if(T&&document.getElementById("panel").style.display!=="none")refresh();
+refreshTimer = setInterval(function(){
+  if(T && document.getElementById("panel").style.display!=="none"){
+    refresh().catch(function(){});      // 401s are handled inside api()
+  }
 },30000);
 </script></body></html>`;
