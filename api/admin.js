@@ -576,6 +576,7 @@ document.getElementById("btnWht").onclick=function(){
   api("/settings",{wht_enabled:!S.wht_enabled}).then(refresh);
 };
 document.getElementById("taxSave").onclick=saveTax;
+
 document.getElementById("rtpSave").onclick=saveRtp;
 document.getElementById("expAdd").onclick=addExpense;
 document.getElementById("auditBtn").onclick=function(){
