@@ -35,9 +35,14 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
     const code = ((h[o] & 0x7f) << 24 | h[o + 1] << 16 | h[o + 2] << 8 | h[o + 3]) % 1e6;
     return String(code).padStart(6, "0");
   }
-  const totpOk = code => [-1, 0, 1].some(w => {
-    try { return crypto.timingSafeEqual(Buffer.from(totp(ADMIN_TOTP_SECRET, w)), Buffer.from(String(code || "").padStart(6, "0"))); }
-    catch { return false; }
+  // +/- 2 steps = 60s either side. Phone clocks drift; a tighter window is the
+  // usual reason a correct-looking code is rejected.
+  const totpOk = code => [-2, -1, 0, 1, 2].some(w => {
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(totp(ADMIN_TOTP_SECRET, w)),
+        Buffer.from(String(code || "").replace(/\D/g, "").padStart(6, "0")));
+    } catch (e) { return false; }
   });
   const pwOk = pw => {
     const a = crypto.createHash("sha256").update(String(pw || "")).digest();
@@ -45,12 +50,20 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
     return crypto.timingSafeEqual(a, b);
   };
 
-  /* ----- rate limiting (DB-backed, survives serverless cold starts) ----- */
-  async function throttled() {
-    const cutoff = Date.now() - 10 * 60 * 1000;
+  /* ----- rate limiting (DB-backed, survives serverless cold starts) -----
+   * Counted per client IP, not globally: one bot probing the URL should not be
+   * able to lock the real operator out. Cleared on every successful login. */
+  const MAX_ATTEMPTS = 8, WINDOW_MS = 10 * 60 * 1000;
+  const clientIp = req =>
+    String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+    (req.socket && req.socket.remoteAddress) || "unknown";
+
+  async function attemptsFor(ip) {
+    const cutoff = Date.now() - WINDOW_MS;
     await pool.query("DELETE FROM admin_attempts WHERE ts < $1", [cutoff]);
-    const r = await pool.query("SELECT COUNT(*) c FROM admin_attempts WHERE ts >= $1", [cutoff]);
-    return Number(r.rows[0].c) >= 8; // max 8 attempts per 10 minutes, global
+    const r = await pool.query(
+      "SELECT COUNT(*) c FROM admin_attempts WHERE ts >= $1 AND ip = $2", [cutoff, ip]);
+    return Number(r.rows[0].c);
   }
 
   function adminAuth(req, res, next) {
@@ -64,13 +77,36 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
 
   /* ----- login ----- */
   app.post(`${P}/login`, async (req, res) => {
-    if (await throttled()) return res.status(429).json({ error: "Too many attempts. Wait 10 minutes." });
+    const ip = clientIp(req);
+    const used = await attemptsFor(ip);
+    if (used >= MAX_ATTEMPTS)
+      return res.status(429).json({ error: "Too many attempts. Wait 10 minutes and try again." });
+
     const { password, code } = req.body || {};
-    if (!pwOk(password) || !totpOk(code)) {
-      await pool.query("INSERT INTO admin_attempts(ts) VALUES($1)", [Date.now()]);
-      return res.status(401).json({ error: "Wrong password or code." });
+    const okPw = pwOk(password), okCode = totpOk(code);
+
+    if (!okPw || !okCode) {
+      await pool.query("INSERT INTO admin_attempts(ts,ip) VALUES($1,$2)", [Date.now(), ip]);
+      // Which factor failed is logged for you but never returned to the client.
+      console.warn("Admin login failed from " + ip +
+        " — password " + (okPw ? "ok" : "WRONG") + ", code " + (okCode ? "ok" : "WRONG"));
+      const left = MAX_ATTEMPTS - (used + 1);
+      return res.status(401).json({
+        error: "Wrong password or authenticator code." +
+               (left > 0 ? ` ${left} attempt${left === 1 ? "" : "s"} left.` : " Locked for 10 minutes."),
+      });
     }
+
+    // A good login clears the slate, so earlier typos can't lock you out later.
+    await pool.query("DELETE FROM admin_attempts WHERE ip = $1", [ip]);
     res.json({ token: sign({ role: "admin", exp: Date.now() + 60 * 60 * 1000 }) });
+  });
+
+  /* Clock check: compare your phone against the server so drift is obvious.
+   * Returns no secrets and needs no auth. */
+  app.get(`${P}/time`, (_req, res) => {
+    res.json({ server_time: new Date().toISOString(), epoch_ms: Date.now(),
+               totp_step: Math.floor(Date.now() / 30000) });
   });
 
   /* ----- dashboard stats ----- */
@@ -330,7 +366,9 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   <h1>Operator console</h1>
   <input id="pw" type="password" placeholder="Password" autocomplete="current-password">
   <input id="code" inputmode="numeric" placeholder="Authenticator code" maxlength="6">
-  <div class="err" id="lerr"></div><button class="on" style="width:100%" id="loginBtn">Sign in</button>
+  <div class="err" id="lerr"></div>
+  <div id="clockWarn" style="display:none;font-size:12px;color:#d29922;background:#1c1500;border:1px solid #4a3800;border-radius:8px;padding:8px;margin-bottom:8px"></div>
+  <button class="on" style="width:100%" id="loginBtn">Sign in</button>
 </div>
 <div id="panel" style="display:none">
   <div class="row" style="justify-content:space-between"><h1>Operator console</h1>
@@ -413,9 +451,30 @@ const K=c=>"KSh "+(c/100).toLocaleString("en-KE");
 const api=async(p,b)=>{const r=await fetch(B+p,{method:b?"POST":"GET",headers:{"Content-Type":"application/json",Authorization:"Bearer "+T},body:b?JSON.stringify(b):undefined});const d=await r.json();if(!r.ok)throw new Error(d.error||"Error");return d};
 
 async function login(){
-  try{const d=await api("/login",{password:document.getElementById("pw").value,code:document.getElementById("code").value});
+  try{
+    const d=await api("/login",{password:document.getElementById("pw").value,
+      code:document.getElementById("code").value});
     T=d.token;sessionStorage.setItem("adm",T);show();
-  }catch(e){document.getElementById("lerr").textContent=e.message}
+  }catch(e){
+    document.getElementById("lerr").textContent=e.message;
+    checkClock();                       // a wrong-looking code is often clock drift
+    document.getElementById("code").value="";
+  }
+}
+
+/* If this device's clock is off, authenticator codes fail even when they look
+ * right on screen. Compare against the server and say so plainly. */
+async function checkClock(){
+  try{
+    const r=await fetch(B+"/time").then(x=>x.json());
+    const skew=Math.abs(Date.now()-r.epoch_ms)/1000;
+    if(skew>20){
+      document.getElementById("clockWarn").innerHTML=
+        "This device's clock is off by about "+Math.round(skew)+
+        " seconds. Authenticator codes are time-based \u2014 enable automatic date &amp; time on the phone generating the code, then try again.";
+      document.getElementById("clockWarn").style.display="block";
+    }
+  }catch(e){}
 }
 
 async function show(){
@@ -622,6 +681,9 @@ async function loadTx(){
 }
 
 document.getElementById("loginBtn").onclick=login;
+["pw","code"].forEach(function(id){
+  document.getElementById(id).addEventListener("keydown",function(e){ if(e.key==="Enter") login(); });
+});
 document.getElementById("btnMode").onclick=function(){toggle("live_mode")};
 document.getElementById("btnWd").onclick=function(){toggle("withdrawals_enabled")};
 document.getElementById("btnWht").onclick=function(){
