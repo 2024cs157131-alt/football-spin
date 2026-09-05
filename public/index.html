@@ -1,647 +1,865 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Fruit Spin — Random Fruit Selector</title>
-  <style>
-    :root {
-      --bg: #0f172a;
-      --card-bg: #1e293b;
-      --accent: #22c55e;
-      --accent-hover: #16a34a;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
-      --border: #334155;
-    }
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Safari Spin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Russo+One&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cab-red:#7d0f12; --cab-deep:#3f0608; --panel:#160b0b;
+    --led:#ff3b30; --led-dim:#3a0d0b; --gold:#f3c440; --pitch:#2fae5e;
+    --lamp:#fff6d8; --ink:#f5efe6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    font-family:Barlow,system-ui,sans-serif;color:var(--ink);
+    background:#140708;
+    min-height:100dvh;margin:0;
+  }
+  /* Everything lives in a fixed-width cabinet so the game keeps its proportions
+     on a desktop instead of stretching across the window. */
+  #app{
+    position:relative;
+    max-width:460px;margin:0 auto;min-height:100dvh;
+    background:radial-gradient(120% 70% at 50% 0%, #a3181c 0%, var(--cab-red) 45%, var(--cab-deep) 100%);
+    padding-bottom:calc(70px + env(safe-area-inset-bottom));
+    overflow:hidden;
+  }
+  @media (min-width:520px){
+    body{background:
+      radial-gradient(80% 50% at 50% 0%, #3a0a0c 0%, #14090a 60%, #0a0405 100%);
+      padding:18px 0}
+    #app{min-height:auto;border-radius:20px;
+      box-shadow:0 24px 70px rgba(0,0,0,.75), 0 0 0 1px rgba(243,196,64,.18);
+      padding-bottom:18px}
+    .bar{position:sticky;border-radius:0 0 20px 20px}
+    .sheet{position:absolute}
+  }
+  header{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:8px 12px 2px;
+  }
+  h1{font-family:'Russo One';font-size:clamp(14px,4.2vw,18px);letter-spacing:1px;color:var(--gold);
+     text-shadow:0 2px 0 #5c3a00}
+  .age{font-size:11px;border:1.5px solid var(--gold);border-radius:50%;
+       width:24px;height:24px;display:grid;place-items:center;color:var(--gold);font-weight:600}
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    }
+  /* LED scoreboard */
+  .boards{display:flex;gap:8px;padding:4px 12px}
+  .board{flex:1;background:var(--panel);border:2px solid var(--gold);border-radius:10px;
+         padding:4px 8px;box-shadow:inset 0 0 18px #000}
+  .board small{display:block;font-family:'Russo One';font-size:10px;color:#ff7ab5;letter-spacing:2px}
+  .board b{font-variant-numeric:tabular-nums;font-family:'Russo One';font-size:clamp(15px,4.6vw,19px);color:var(--led);
+           text-shadow:0 0 8px rgba(255,59,48,.8)}
 
-    body {
-      background-color: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem 1rem;
-    }
+  /* wheel — a square ring: 7x7 grid, 24 perimeter cells, hub in the middle */
+  .wheel-wrap{position:relative;width:min(92vw,min(370px,42vh));aspect-ratio:1;
+              margin:6px auto;display:grid;
+              grid-template-columns:repeat(7,1fr);grid-template-rows:repeat(7,1fr);gap:3px}
+  .hub{grid-row:2/7;grid-column:2/7;border-radius:12px;
+       background:radial-gradient(circle at 35% 30%, #2a1414, #0d0505 70%);
+       border:3px solid var(--gold);display:grid;place-items:center;align-content:center;
+       box-shadow:0 0 40px rgba(0,0,0,.6)}
+  .hub .num{font-family:'Russo One';font-size:clamp(24px,8vw,38px);color:var(--led);
+            text-shadow:0 0 12px rgba(255,59,48,.9);line-height:1}
+  .hub .msg{font-size:clamp(9px,2.7vw,11px);color:#e8b7b7;margin-top:4px;min-height:15px;
+            text-align:center;padding:0 10px}
+  .slot{position:relative;border-radius:7px;display:grid;place-items:center;
+        font-family:'Russo One';border:2px solid #cfe6ff;color:#fff;overflow:hidden;
+        box-shadow:0 2px 4px rgba(0,0,0,.5);transition:box-shadow .1s, filter .1s}
+  .slot em{font-style:normal;font-size:clamp(5px,1.5vw,7px);display:block;
+           text-align:center;line-height:1;padding:1px}
+  .slot.lit{box-shadow:0 0 0 3px var(--lamp), 0 0 20px 5px var(--lamp);filter:brightness(1.25)}
+  .slot.lit-gold{box-shadow:0 0 0 3px #ffd54a, 0 0 24px 7px #ffb300;filter:brightness(1.4)}
+  .slot.lit-purple{box-shadow:0 0 0 3px #d18aff, 0 0 24px 7px #8e24aa;filter:brightness(1.35)}
+  .slot.lit-green{box-shadow:0 0 0 3px #7bffa8, 0 0 22px 6px #14a44d;filter:brightness(1.3)}
 
-    header {
-      text-align: center;
-      margin-bottom: 2rem;
-    }
+  /* bet panel — compact 4-across, square tiles */
+  .bets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;
+        padding:0 12px;margin-top:6px}
+  .bet{position:relative;aspect-ratio:1;background:var(--panel);
+       border:2px solid #4a3d18;border-radius:10px;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+       transition:transform .12s ease, border-color .12s, box-shadow .12s;
+       overflow:hidden;cursor:pointer;-webkit-user-select:none;user-select:none}
+  .bet .dot{width:40%;aspect-ratio:1;border-radius:50%;display:grid;place-items:center;
+            font-family:'Russo One';font-size:clamp(5px,1.6vw,7px);color:#fff;
+            border:1.5px solid rgba(255,255,255,.25);overflow:hidden;flex:0 0 auto}
+  .bet small{font-size:7px;letter-spacing:.3px;color:#c9a86a;line-height:1}
+  .bet b{font-family:'Russo One';font-size:clamp(10px,3vw,12px);color:var(--led);line-height:1}
 
-    header h1 {
-      font-size: 2.5rem;
-      font-weight: 800;
-      background: linear-gradient(to right, #ef4444, #f59e0b, #10b981);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin-bottom: 0.5rem;
-    }
+  /* SELECTED: gold frame, tick, stake bar */
+  .bet.active{border-color:var(--gold);
+    background:linear-gradient(160deg,#4a3708,#241703);
+    box-shadow:0 0 0 2px rgba(243,196,64,.35), 0 0 14px 2px rgba(243,196,64,.45);
+    transform:translateY(-2px) scale(1.03)}
+  .bet.active b{color:#ffe08a}
+  .bet.active small{color:var(--gold)}
+  .bet .reps{position:absolute;top:2px;left:2px;min-width:15px;height:15px;padding:0 3px;
+    border-radius:8px;background:#d92c20;color:#fff;font-family:'Russo One';font-size:9px;
+    display:none;place-items:center;line-height:1}
+  .bet .tick{position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;
+    background:var(--gold);color:#241300;font-size:9px;font-weight:700;
+    display:none;place-items:center;line-height:1}
+  .bet.active .tick{display:grid}
+  .bet .amt{position:absolute;left:0;right:0;bottom:0;padding:1px 0;
+    background:var(--gold);color:#241300;font-family:'Russo One';
+    font-size:clamp(8px,2.3vw,10px);display:none}
+  .bet.active .amt{display:block}
+  .bet.bump{animation:bump .22s ease}
+  @media (hover:hover){
+    .bet:hover{border-color:#8a7328}
+    .bet.active:hover{border-color:var(--gold)}
+  }
+  @keyframes bump{50%{transform:translateY(-5px) scale(1.09)}}
 
-    header p {
-      color: var(--text-muted);
-      font-size: 1rem;
-    }
+  /* controls */
+  .bar{position:fixed;left:50%;transform:translateX(-50%);width:100%;max-width:460px;bottom:0;background:linear-gradient(#241010,#120707);
+       border-top:2px solid var(--gold);padding:7px 12px calc(7px + env(safe-area-inset-bottom));
+       display:flex;gap:8px}
+  button{font-family:'Russo One';border:none;border-radius:11px;padding:10px 0;font-size:13px;
+         color:#241300;background:linear-gradient(#ffe08a,var(--gold));flex:1;
+         box-shadow:0 3px 0 #8a6a12;cursor:pointer}
+  button:active{transform:translateY(2px);box-shadow:0 1px 0 #8a6a12}
+  .bar button:active{transform:translateY(2px)}
+  button.red{background:linear-gradient(#ff6b5e,#d92c20);color:#fff;box-shadow:0 3px 0 #7a140d}
+  button.ghost{background:transparent;color:var(--gold);border:2px solid var(--gold);box-shadow:none}
+  button:disabled{opacity:.5}
+  .chips{display:flex;gap:6px;justify-content:center;margin:6px 12px 0}
+  .chip{flex:0 0 auto;width:52px;padding:6px 0;border-radius:999px;font-size:13px}
+  .chip.sel{outline:3px solid #fff}
 
-    .container {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 2rem;
-      max-width: 1100px;
-      width: 100%;
-    }
-
-    @media (min-width: 850px) {
-      .container {
-        grid-template-columns: 1fr 340px;
-      }
-    }
-
-    .wheel-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 1.5rem;
-      padding: 2rem;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      position: relative;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
-    }
-
-    .wheel-wrapper {
-      position: relative;
-      width: 100%;
-      max-width: 420px;
-      aspect-ratio: 1;
-      margin-bottom: 2rem;
-    }
-
-    /* Pointer Arrow */
-    .pointer {
-      position: absolute;
-      top: -12px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 32px;
-      height: 38px;
-      z-index: 10;
-      filter: drop-shadow(0 4px 6px rgba(0,0,0,0.4));
-    }
-
-    .pointer::after {
-      content: '';
-      display: block;
-      width: 0;
-      height: 0;
-      border-left: 16px solid transparent;
-      border-right: 16px solid transparent;
-      border-top: 32px solid #ef4444;
-    }
-
-    canvas {
-      width: 100%;
-      height: 100%;
-      border-radius: 50%;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
-    }
-
-    .controls {
-      display: flex;
-      gap: 1rem;
-      width: 100%;
-      max-width: 420px;
-    }
-
-    button {
-      cursor: pointer;
-      border: none;
-      border-radius: 0.75rem;
-      font-weight: 700;
-      font-size: 1.1rem;
-      transition: all 0.2s ease;
-    }
-
-    .spin-btn {
-      flex: 1;
-      background: var(--accent);
-      color: #000;
-      padding: 1rem;
-      box-shadow: 0 4px 14px rgba(34, 197, 94, 0.4);
-    }
-
-    .spin-btn:hover:not(:disabled) {
-      background: var(--accent-hover);
-      transform: translateY(-2px);
-    }
-
-    .spin-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .sound-btn {
-      background: #334155;
-      color: var(--text);
-      padding: 1rem;
-      width: 54px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .sound-btn:hover {
-      background: #475569;
-    }
-
-    .sidebar {
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
-    }
-
-    .panel {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 1.5rem;
-      padding: 1.5rem;
-    }
-
-    .panel h2 {
-      font-size: 1.2rem;
-      margin-bottom: 1rem;
-      color: var(--text);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .fruit-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      max-height: 220px;
-      overflow-y: auto;
-      padding-right: 0.5rem;
-    }
-
-    .fruit-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: #0f172a;
-      padding: 0.6rem 0.8rem;
-      border-radius: 0.5rem;
-      border: 1px solid var(--border);
-    }
-
-    .fruit-info {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-      font-size: 0.95rem;
-    }
-
-    .remove-btn {
-      background: transparent;
-      color: #ef4444;
-      font-size: 1.2rem;
-      padding: 0 0.4rem;
-    }
-
-    .remove-btn:hover {
-      color: #dc2626;
-    }
-
-    .add-fruit-form {
-      display: flex;
-      gap: 0.5rem;
-      margin-top: 1rem;
-    }
-
-    .add-fruit-form input {
-      flex: 1;
-      background: #0f172a;
-      border: 1px solid var(--border);
-      border-radius: 0.5rem;
-      padding: 0.6rem 0.8rem;
-      color: var(--text);
-      font-size: 0.9rem;
-    }
-
-    .add-fruit-form input:focus {
-      outline: 2px solid var(--accent);
-    }
-
-    .add-btn {
-      background: #334155;
-      color: var(--text);
-      padding: 0.6rem 1rem;
-      font-size: 0.9rem;
-    }
-
-    .add-btn:hover {
-      background: #475569;
-    }
-
-    .history-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      max-height: 200px;
-      overflow-y: auto;
-    }
-
-    .history-item {
-      font-size: 0.9rem;
-      color: var(--text-muted);
-      padding: 0.4rem 0;
-      border-bottom: 1px dashed var(--border);
-      display: flex;
-      justify-content: space-between;
-    }
-
-    /* Modal */
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(4px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.3s ease;
-      z-index: 100;
-    }
-
-    .modal-overlay.active {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    .modal {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 1.5rem;
-      padding: 2.5rem;
-      text-align: center;
-      max-width: 360px;
-      width: 90%;
-      transform: scale(0.8);
-      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-    }
-
-    .modal-overlay.active .modal {
-      transform: scale(1);
-    }
-
-    .modal-emoji {
-      font-size: 5rem;
-      margin-bottom: 1rem;
-      animation: bounce 1s infinite alternate;
-    }
-
-    .modal h3 {
-      font-size: 1.8rem;
-      margin-bottom: 0.5rem;
-    }
-
-    .modal p {
-      color: var(--text-muted);
-      margin-bottom: 1.5rem;
-    }
-
-    .close-btn {
-      background: var(--accent);
-      color: #000;
-      padding: 0.8rem 2rem;
-      width: 100%;
-    }
-
-    @keyframes bounce {
-      from { transform: translateY(0); }
-      to { transform: translateY(-10px); }
-    }
-  </style>
+  /* sheets */
+  .sheet{position:fixed;inset:0;background:rgba(10,3,3,.72);display:none;place-items:end center;z-index:9}
+  @media (min-width:520px){ .sheet{place-items:center} .card{border-radius:16px;max-width:420px} }
+  .sheet.open{display:grid}
+  .card{background:#1d0e0e;border:2px solid var(--gold);border-radius:18px 18px 0 0;width:100%;
+        max-width:480px;padding:16px 16px calc(16px + env(safe-area-inset-bottom));max-height:92dvh;overflow-y:auto}
+  .card h2{font-family:'Russo One';color:var(--gold);font-size:16px;margin-bottom:12px}
+  .card label{font-size:11px;color:#e6c9c9;display:block;margin:7px 0 3px}
+  .card input,.card select{width:100%;padding:10px;border-radius:10px;border:1.5px solid #5a4a1c;
+        background:#0e0606;color:var(--ink);font-size:15px}
+  .card .err{color:#ff8a80;font-size:13px;min-height:16px;margin-top:8px}
+  .rg{font-size:11px;color:#caa;text-align:center;margin-top:14px;line-height:1.5}
+  .rg a{color:var(--gold)}
+  .soundbtn{position:absolute;right:16px;top:52px;background:none;border:none;box-shadow:none;
+            color:var(--gold);font-size:18px;width:auto;flex:0;padding:0;cursor:pointer}
+</style>
 </head>
 <body>
-
-  <header>
-    <h1>Fruit Spin 🍓</h1>
-    <p>Can't decide what fruit to eat? Spin the wheel!</p>
-  </header>
-
-  <div class="container">
-    <div class="wheel-card">
-      <div class="wheel-wrapper">
-        <div class="pointer"></div>
-        <canvas id="wheel" width="800" height="800"></canvas>
-      </div>
-
-      <div class="controls">
-        <button class="spin-btn" id="spinBtn">SPIN WHEEL</button>
-        <button class="sound-btn" id="soundBtn" title="Toggle Sound">🔊</button>
-      </div>
-    </div>
-
-    <div class="sidebar">
-      <div class="panel">
-        <h2>Active Fruits</h2>
-        <div class="fruit-list" id="fruitList"></div>
-        
-        <form class="add-fruit-form" id="addForm">
-          <input type="text" id="emojiInput" placeholder="🍎" maxlength="2" style="width: 50px; text-align: center;" required>
-          <input type="text" id="nameInput" placeholder="Apple" required>
-          <button type="submit" class="add-btn">+</button>
-        </form>
-      </div>
-
-      <div class="panel">
-        <h2>Spin History</h2>
-        <div class="history-list" id="historyList">
-          <div style="color: var(--text-muted); font-size: 0.85rem;">No spins yet.</div>
-        </div>
-      </div>
-    </div>
+<div id="app">
+<header>
+  <h1>SAFARI SPIN</h1>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span id="soundToggle" style="cursor:pointer;font-size:18px;color:var(--gold)">&#128266;</span>
+    <span id="modeBadge" style="display:none;font-family:'Russo One';font-size:10px;background:#9e6a03;color:#fff;padding:3px 10px;border-radius:999px">DEMO</span>
+    <div class="age">18+</div>
   </div>
+</header>
 
-  <!-- Winner Modal -->
-  <div class="modal-overlay" id="modal">
-    <div class="modal">
-      <div class="modal-emoji" id="modalEmoji">🍎</div>
-      <h3 id="modalName">Apple</h3>
-      <p>Your fresh fruit choice is ready!</p>
-      <button class="close-btn" id="closeModal">Awesome!</button>
-    </div>
+<div class="boards">
+  <div class="board"><small>BONUS-WIN</small><b id="lastWin">0.00</b></div>
+  <div class="board"><small id="creditLabel">CREDIT KSh</small><b id="balance">0.00</b></div>
+</div>
+
+<div style="margin:5px 12px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
+     border:2px solid var(--gold);border-radius:9px;text-align:center;padding:3px">
+  <span style="font-family:'Russo One';font-size:11px;color:#ffd98a;letter-spacing:2px">JACKPOT</span>
+  <div style="font-family:'Russo One';font-size:clamp(16px,5vw,21px);color:var(--gold);text-shadow:0 0 10px rgba(243,196,64,.7)" id="jackpotPool">KSh —</div>
+</div>
+
+<div id="winnersBar" style="display:none;margin:4px 12px 0;overflow:hidden;white-space:nowrap;
+     background:#1a0b0b;border:1px solid #5a4a1c;border-radius:8px;padding:6px 0">
+  <div id="winnersTrack" style="display:inline-block;padding-left:100%;animation:tick 30s linear infinite;
+       font-size:12px;color:#ffd98a"></div>
+</div>
+<style>@keyframes tick{to{transform:translateX(-100%)}}
+@media (prefers-reduced-motion: reduce){#winnersTrack{animation:none;padding-left:8px}}</style>
+
+<div class="wheel-wrap" id="wheel">
+  <div class="hub"><div class="num" id="hubNum">--</div><div class="msg" id="hubMsg">Log in to play</div></div>
+</div>
+
+<div class="bets" id="bets"></div>
+
+<div class="chips" id="chips"></div>
+<p id="betHint" style="text-align:center;font-size:10px;color:#a98;margin:5px 12px 0"></p>
+
+<div class="bar">
+  <button class="ghost" id="depositBtn">Deposit</button>
+  <button class="ghost" id="withdrawBtn">Withdraw</button>
+  <button class="red" id="spinBtn">START</button>
+</div>
+
+</div><!-- /#app -->
+
+<!-- auth sheet -->
+<div class="sheet open" id="bootSheet"><div class="card" style="text-align:center">
+  <h2 style="margin-bottom:6px">SAFARI SPIN</h2>
+  <p style="font-size:13px;color:#e6c9c9">Checking your session\u2026</p>
+</div></div>
+
+<div class="sheet" id="authSheet"><div class="card">
+  <h2>Sign in</h2>
+  <label>Email</label><input id="email" type="email" autocomplete="email">
+  <label>Full name — as on your ID (new accounts)</label><input id="regName" autocomplete="name">
+  <label>National ID number (new accounts)</label><input id="regId" inputmode="numeric" maxlength="9">
+  <label>M-Pesa number (new accounts)</label><input id="regPhone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
+  <label>Password</label><input id="password" type="password" autocomplete="current-password">
+  <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
+    <input type="checkbox" id="over18" style="width:auto"> I confirm I am 18 or older
+  </label>
+  <div class="err" id="authErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="loginBtn">Log in</button>
+    <button class="ghost" id="registerBtn">Create account</button>
   </div>
+  <p class="rg">Play responsibly. Betting is for entertainment — never stake money you can't afford to lose.
+  If gambling stops being fun, free help is available.</p>
+</div></div>
 
-  <script>
-    // Initial Fruit Items
-    let fruits = [
-      { name: 'Apple', emoji: '🍎', color: '#ef4444' },
-      { name: 'Banana', emoji: '🍌', color: '#eab308' },
-      { name: 'Watermelon', emoji: '🍉', color: '#22c55e' },
-      { name: 'Grape', emoji: '🍇', color: '#a855f7' },
-      { name: 'Orange', emoji: '🍊', color: '#f97316' },
-      { name: 'Strawberry', emoji: '🍓', color: '#f43f5e' },
-      { name: 'Pineapple', emoji: '🍍', color: '#eab308' },
-      { name: 'Kiwi', emoji: '🥝', color: '#84cc16' }
-    ];
+<!-- BONUS: pick 3 of 9 -->
+<div class="sheet" id="bonusSheet"><div class="card" style="border-color:#7a1fa0">
+  <h2 style="color:#e6a8ff">&#128142; DIAMOND BONUS — pick 3</h2>
+  <p style="font-size:12px;color:#e6c9c9;margin-bottom:10px" id="bonusMsg">Each tile hides a multiplier of your stake. Choose three.</p>
+  <div id="bonusGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"></div>
+  <div style="font-family:'Russo One';font-size:18px;color:var(--gold);text-align:center;margin-top:12px;min-height:24px" id="bonusTotal"></div>
+  <button id="bonusDone" style="display:none;width:100%;margin-top:10px">Collect</button>
+</div></div>
 
-    const palette = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#8b5cf6', '#ec4899'];
+<!-- PesaLink sheet -->
+<div class="sheet" id="plSheet"><div class="card">
+  <h2>PesaLink bank transfer</h2>
+  <p style="font-size:12px;color:#e6c9c9">For amounts above KSh 70,000. Processed within one business day.</p>
+  <label>Amount (KSh)</label><input id="plAmount" type="number" min="70001" step="1000">
+  <label>Bank name</label><input id="plBank" placeholder="e.g. Equity Bank">
+  <label>Account number</label><input id="plAcct" inputmode="numeric">
+  <div class="err" id="plErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="plGo">Request transfer</button>
+    <button class="ghost" id="plCancel">Cancel</button>
+  </div>
+</div></div>
 
-    // DOM Elements
-    const canvas = document.getElementById('wheel');
-    const ctx = canvas.getContext('2d');
-    const spinBtn = document.getElementById('spinBtn');
-    const soundBtn = document.getElementById('soundBtn');
-    const fruitListEl = document.getElementById('fruitList');
-    const historyListEl = document.getElementById('historyList');
-    const addForm = document.getElementById('addForm');
-    const modal = document.getElementById('modal');
-    const modalEmoji = document.getElementById('modalEmoji');
-    const modalName = document.getElementById('modalName');
-    const closeModal = document.getElementById('closeModal');
+<!-- deposit sheet -->
+<div class="sheet" id="depositSheet"><div class="card">
+  <h2>Deposit via M-Pesa</h2>
+  <label>M-Pesa number</label><input id="depPhone" inputmode="tel" placeholder="07XX XXX XXX">
+  <label>Amount (KSh 100 – 100,000)</label><input id="depAmount" type="number" min="100" max="100000" step="50" value="200">
+  <div class="err" id="depErr"></div>
+  <p class="rg" id="paybillNote" style="text-align:left;margin-top:10px"></p>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="depGo">Send M-Pesa prompt</button>
+    <button class="ghost" id="depCancel">Cancel</button>
+  </div>
+</div></div>
 
-    // State Variables
-    let currentAngle = 0;
-    let isSpinning = false;
-    let soundEnabled = true;
-    let audioCtx = null;
-    let lastSegmentIndex = -1;
+<!-- withdraw sheet -->
+<div class="sheet" id="withdrawSheet"><div class="card">
+  <h2>Withdraw to M-Pesa</h2>
+  <label>Amount (KSh 100 – 70,000 via M-Pesa)</label><input id="wdAmount" type="number" min="100" step="50">
+  <p class="rg" style="text-align:left;margin-top:6px">Max 3 withdrawals per day. Above KSh 70,000 use PesaLink bank transfer.</p>
+  <p class="rg" style="text-align:left" id="wdDest"></p>
+  <div class="err" id="wdErr"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="wdGo">Send to M-Pesa</button>
+    <button class="ghost" id="wdCancel">Cancel</button>
+  </div>
+</div></div>
 
-    // Audio Synthesizer for self-contained sound effects
-    function playSound(type) {
-      if (!soundEnabled) return;
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      }
+<script>
+/* ---- game data (must match server WHEEL order) ---- */
+const ANIMALS = {
+  star:{n:"\u2605",c:"#f3c440",odds:"50\u2013100",star:1},
+  elephant:{n:"ELEPHANT",c:"#78909c",odds:"30",big:1},
+  rhino:{n:"RHINO",c:"#546e7a",odds:"25",big:1},
+  lion:{n:"LION",c:"#c8862a",odds:"20",big:1},
+  buffalo:{n:"BUFFALO",c:"#6d4c41",odds:"15",big:1},
+  leopard:{n:"LEOPARD",c:"#e08a1e",odds:"12",big:1},
+  giraffe:{n:"GIRAFFE",c:"#d4a017",odds:"8"},
+  zebra:{n:"ZEBRA",c:"#37474f",odds:"5"},
+  allprize:{n:"ALL",c:"#7a1fa0"}, diamond:{n:"\u25C6",c:"#3a3ad0"},
+};
+const WHEEL = ["star","star","allprize","zebra","giraffe","leopard","buffalo","diamond",
+  "zebra","lion","rhino","elephant","giraffe","leopard","buffalo","zebra","lion","rhino",
+  "elephant","diamond","giraffe","leopard","buffalo","allprize"];
+const BETTABLE = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
+const CHIP_VALUES = [20,50,100,200];
 
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
+let stakeTaps = {}, lastBets = {};
+let token = localStorage.getItem("fs_token") || null;
+let balance = 0, bets = {}, chip = 20, spinning = false;
+let lastJackpotAt = 0, isLive = true, myPhone = "";
 
-      if (type === 'tick') {
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
-        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.05);
-      } else if (type === 'win') {
-        const now = audioCtx.currentTime;
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(523.25, now); // C5
-        osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
-        osc.frequency.setValueAtTime(783.99, now + 0.2); // G5
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
-        osc.start(now);
-        osc.stop(now + 0.5);
-      }
+const $ = id => document.getElementById(id);
+const money = k => (k/100).toLocaleString("en-KE",{minimumFractionDigits:2});
+const open_ = id => $(id).classList.add("open");
+const close_ = id => $(id).classList.remove("open");
+
+/* ---------- AUDIO: synthesised SFX + procedural music (no audio files) ---------- */
+let audioCtx = null, soundOn = localStorage.getItem("fs_sound") !== "off";
+function ac(){
+  if(!audioCtx){
+    try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ return null; }
+  }
+  if(audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+function tone(freq, dur, type, vol, delay){
+  if(!soundOn) return;
+  const c = ac(); if(!c) return;
+  const t0 = c.currentTime + (delay || 0);
+  const osc = c.createOscillator(), g = c.createGain();
+  osc.type = type || "sine";
+  osc.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(vol || 0.15, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(c.destination);
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
+const sfx = {
+  tick(){ tone(880, 0.04, "square", 0.05); },
+  chip(){ tone(660, 0.07, "triangle", 0.12); },
+  spin(){ tone(220, 0.15, "sawtooth", 0.10); },
+  lose(){ tone(200, 0.25, "sine", 0.10); tone(150, 0.3, "sine", 0.09, 0.12); },
+  win(){ [523,659,784,1047].forEach((f,i)=>tone(f, 0.22, "triangle", 0.16, i*0.09)); },
+  bigWin(){ [523,659,784,1047,1319].forEach((f,i)=>tone(f, 0.3, "triangle", 0.18, i*0.08));
+            [392,523].forEach((f,i)=>tone(f, 0.5, "sine", 0.12, 0.45+i*0.12)); },
+  jackpot(){ [523,587,659,698,784,880,988,1047].forEach((f,i)=>tone(f,0.35,"square",0.16,i*0.1));
+             [1047,1319,1568].forEach((f,i)=>tone(f,0.8,"triangle",0.2,0.85+i*0.05)); },
+  error(){ tone(180, 0.18, "square", 0.10); },
+};
+
+/* Procedural music: a step sequencer that switches "mood" with game state.
+ * Each mood is a note pattern + timbre; music stops exactly when the wheel
+ * stops, and swaps to the bonus/jackpot theme while those games run. */
+const MOODS = {
+  idle:    { notes:[220,277,330,277], step:0.42, type:"triangle", vol:0.045, bass:110 },
+  spin:    { notes:[330,392,440,392,330,294], step:0.16, type:"sawtooth", vol:0.055, bass:110 },
+  bonus:   { notes:[311,370,415,466,415,370], step:0.20, type:"square", vol:0.06, bass:155 },
+  jackpot: { notes:[523,659,784,1047,784,659], step:0.15, type:"triangle", vol:0.075, bass:131 },
+};
+let music = { mood:null, timer:null, i:0 };
+function setMusic(mood){
+  if(music.mood === mood) return;
+  music.mood = mood; music.i = 0;
+  clearInterval(music.timer); music.timer = null;
+  if(!mood || !soundOn) return;
+  const m = MOODS[mood]; if(!m) return;
+  const play = () => {
+    if(!soundOn){ return; }
+    const n = m.notes[music.i % m.notes.length];
+    tone(n, m.step*1.6, m.type, m.vol);
+    if(music.i % 4 === 0) tone(m.bass, m.step*2.4, "sine", m.vol*0.9);
+    music.i++;
+  };
+  play();
+  music.timer = setInterval(play, m.step*1000);
+}
+function stopMusic(){ setMusic(null); }
+
+function updateSoundIcon(){ $("soundToggle").innerHTML = soundOn ? "&#128266;" : "&#128263;"; }
+$("soundToggle").onclick = () => {
+  soundOn = !soundOn;
+  localStorage.setItem("fs_sound", soundOn ? "on" : "off");
+  updateSoundIcon();
+  if(!soundOn) stopMusic(); else sfx.chip();
+};
+updateSoundIcon();
+
+/* ---------- LIGHT ENGINE: a different pattern per scenario ---------- */
+let lightTimer = null;
+function stopLights(){
+  clearInterval(lightTimer); lightTimer = null;
+  slots.forEach(s=>{ s.classList.remove("lit","lit-gold","lit-purple","lit-green"); });
+}
+function lightsAll(cls, period){
+  stopLights();
+  let on = false;
+  lightTimer = setInterval(()=>{
+    on = !on;
+    slots.forEach(s=> on ? s.classList.add(cls) : s.classList.remove(cls));
+  }, period);
+}
+function lightsRainbow(){                       // JACKPOT: gold wave around the wheel
+  stopLights();
+  let p = 0;
+  lightTimer = setInterval(()=>{
+    slots.forEach((s,i)=>{
+      s.classList.toggle("lit-gold", (i + p) % 3 === 0);
+      s.classList.toggle("lit-purple", (i + p) % 3 === 1);
+    });
+    p++;
+  }, 110);
+}
+function lightsPurplePulse(){                   // BONUS: slow purple breathing
+  lightsAll("lit-purple", 320);
+}
+function lightsGreenFlash(){                    // FREE SPIN: quick green blink
+  lightsAll("lit-green", 150);
+}
+function lightsWinner(slot){                    // WIN: only the winning slot pulses
+  stopLights();
+  let on = false;
+  lightTimer = setInterval(()=>{
+    on = !on;
+    slots[slot].classList.toggle("lit-gold", on);
+  }, 220);
+}
+
+/* ---------- API ---------- */
+async function api(path, body){
+  const r = await fetch("/api/"+path,{
+    method: body?"POST":"GET",
+    headers:{ "Content-Type":"application/json", ...(token?{Authorization:"Bearer "+token}:{}) },
+    body: body?JSON.stringify(body):undefined
+  });
+  const d = await r.json().catch(()=>({}));
+  if(r.status === 401 && token && path !== "login" && path !== "register"){
+    token=null; localStorage.removeItem("fs_token");
+    close_("bootSheet"); open_("authSheet");
+  }
+  if(!r.ok) throw new Error(d.error||"Something went wrong.");
+  return d;
+}
+
+/* ---- build wheel: 24 cells around the perimeter of a 7x7 grid ----
+   Sequence starts at top-centre so the two STAR slots sit at the top of the
+   board, then runs clockwise. Each entry is [row, col], 1-indexed for CSS. */
+const RING = (function(){
+  const p = [];
+  for(let c = 4; c <= 7; c++) p.push([1, c]);      // top row, centre -> right
+  for(let r = 2; r <= 6; r++) p.push([r, 7]);      // right column
+  for(let c = 7; c >= 1; c--) p.push([7, c]);      // bottom row, right -> left
+  for(let r = 6; r >= 2; r--) p.push([r, 1]);      // left column
+  for(let c = 1; c <= 3; c++) p.push([1, c]);      // top row, left -> centre
+  return p;                                        // 4 + 5 + 7 + 5 + 3 = 24
+})();
+
+const wrap = $("wheel"), slots = [];
+WHEEL.forEach((key, i)=>{
+  const [r, c] = RING[i];
+  const el = document.createElement("div");
+  el.className = "slot";
+  el.style.gridRow = r; el.style.gridColumn = c;
+  el.style.background = ANIMALS[key].c;
+  el.innerHTML = "<em>"+ANIMALS[key].n+"</em>";
+  if(key === "star"){
+    el.style.background = "radial-gradient(circle at 35% 30%,#fff3b0,#f3c440 60%,#c99a06)";
+    const em = el.querySelector("em");
+    em.style.fontSize = "clamp(11px,3.4vw,16px)"; em.style.color = "#241300";
+  } else {
+    const img = new Image(); img.src = "logos/"+key+".png";
+    img.onload = ()=>{
+      el.style.background = "#fff url(logos/"+key+".png) center/cover no-repeat";
+      const em = el.querySelector("em"); if(em) em.style.display = "none";
+    };
+  }
+  wrap.appendChild(el); slots.push(el);
+});
+
+/* Eight stakes across two compact rows, star first. */
+const BOARD = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
+
+BOARD.forEach(key=>{
+  const t = ANIMALS[key], el = document.createElement("div");
+  el.className = "bet"; el.id = "bet-"+key;
+  el.innerHTML =
+    '<div class="tick">\u2713</div><div class="reps"></div>' +
+    '<div class="dot" style="background:'+t.c+'">'+t.n+'</div>' +
+    '<small>'+(t.star ? "\u2605 STAR" : (t.big ? "BIG 5" : "PAYS"))+'</small>' +
+    '<b>'+t.odds+'\u00D7</b>' +
+    '<div class="amt" id="amt-'+key+'"></div>';
+
+  if(t.star){
+    el.style.borderColor = "#7a6420";
+    el.style.background = "linear-gradient(160deg,#2a1c04,#160b0b)";
+    const d = el.querySelector(".dot");
+    d.style.fontSize = "20px"; d.style.color = "#241300";
+  }
+
+  el.onclick = ()=>{
+    if(spinning) return;
+    bets[key] = (bets[key]||0) + chip*100;
+    stakeTaps[key] = (stakeTaps[key]||0) + 1;
+    el.classList.add("active");
+    $("amt-"+key).textContent = "KSh "+(bets[key]/100).toLocaleString();
+    const badge = el.querySelector(".reps");
+    if(stakeTaps[key] > 1){ badge.textContent = "\u00D7"+stakeTaps[key]; badge.style.display="grid"; }
+    el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
+    updateStakeTotal();
+    ac(); sfx.chip();
+    if(!music.mood) setMusic("idle");
+  };
+  /* Long-press clears this stake. It must never fire on an ordinary tap, so the
+     threshold is generous, any finger movement cancels it, and the click that
+     follows is swallowed — otherwise the stake was silently removed or
+     re-added and the player had no idea. */
+  el.oncontextmenu = e=>{ e.preventDefault(); clearOne(key); };
+  let lp = null, lpFired = false, sx = 0, sy = 0;
+  el.addEventListener("touchstart", e=>{
+    lpFired = false;
+    const t = e.touches[0]; sx = t.clientX; sy = t.clientY;
+    lp = setTimeout(()=>{ lpFired = true; clearOne(key); }, 800);
+  }, {passive:true});
+  el.addEventListener("touchmove", e=>{
+    const t = e.touches[0];
+    if(Math.abs(t.clientX-sx) > 10 || Math.abs(t.clientY-sy) > 10){
+      clearTimeout(lp); lp = null;
     }
+  }, {passive:true});
+  ["touchend","touchcancel"].forEach(ev =>
+    el.addEventListener(ev, ()=>{ clearTimeout(lp); lp = null; }, {passive:true}));
+  // if the long-press already cleared the stake, don't let the tap re-add it
+  el.addEventListener("click", e=>{
+    if(lpFired){ e.preventDefault(); e.stopImmediatePropagation(); lpFired = false; }
+  }, true);
 
-    // Render Wheel
-    function drawWheel() {
-      const numSlices = fruits.length;
-      if (numSlices === 0) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        return;
-      }
+  if(!t.star){
+    const dimg = new Image(); dimg.src = "logos/"+key+".png";
+    dimg.onload = ()=>{ const d = el.querySelector(".dot");
+      d.style.background = "#fff url(logos/"+key+".png) center/cover no-repeat"; d.textContent = ""; };
+  }
+  $("bets").appendChild(el);
+});
 
-      const sliceAngle = (2 * Math.PI) / numSlices;
-      const radius = canvas.width / 2;
+function clearOne(key){
+  if(spinning || !bets[key]) return;
+  delete bets[key]; delete stakeTaps[key];
+  const el = $("bet-"+key);
+  el.classList.remove("active");
+  const b = el.querySelector(".reps"); if(b){ b.style.display="none"; b.textContent=""; }
+  $("amt-"+key).textContent = "";
+  updateStakeTotal();
+  sfx.chip();
+}
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.save();
-      ctx.translate(radius, radius);
-      ctx.rotate(currentAngle);
+(function(){
+  const c = document.createElement("button");
+  c.className = "chip"; c.id = "betClear";
+  c.style.cssText = "width:auto;padding:6px 12px;font-size:11px;background:transparent;"+
+    "color:#c9a86a;border:1.5px dashed #5a4a1c;box-shadow:none";
+  c.textContent = "CLEAR";
+  c.onclick = ()=>{ if(!spinning){ clearBets(); sfx.chip(); } };
+  $("chips").appendChild(c);
+})();
+CHIP_VALUES.forEach(v=>{
+  const b=document.createElement("button");
+  b.className="chip"+(v===chip?" sel":""); b.textContent=v;
+  b.onclick=()=>{chip=v;[...$("chips").children].forEach(c=>c.classList.remove("sel"));b.classList.add("sel");sfx.chip();};
+  $("chips").appendChild(b);
+});
 
-      for (let i = 0; i < numSlices; i++) {
-        const angle = i * sliceAngle;
+function clearBets(){
+  bets = {}; stakeTaps = {};
+  BETTABLE.forEach(k=>{
+    const el = $("bet-"+k);
+    if(el){ el.classList.remove("active","bump");
+      const b = el.querySelector(".reps"); if(b){ b.style.display="none"; b.textContent=""; } }
+    const a = $("amt-"+k); if(a) a.textContent = "";
+  });
+  updateStakeTotal();
+}
 
-        // Draw Wedge
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.arc(0, 0, radius - 10, angle, angle + sliceAngle);
-        ctx.fillStyle = fruits[i].color;
-        ctx.fill();
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = '#1e293b';
-        ctx.stroke();
+/* running total so the player always sees what this spin costs */
+function updateStakeTotal(){
+  const total = Object.values(bets).reduce((s,v)=>s+v,0);
+  const btn = $("spinBtn");
+  btn.textContent = total ? "SPIN \u00B7 KSh "+(total/100).toLocaleString() : "START";
+}
+function setBalance(k){ balance=k; $("balance").textContent=money(k); }
 
-        // Draw Text / Emoji
-        ctx.save();
-        ctx.rotate(angle + sliceAngle / 2);
-        ctx.textAlign = 'right';
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 28px system-ui';
-        ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        ctx.shadowBlur = 4;
-
-        // Render Emoji and Name
-        ctx.fillText(`${fruits[i].emoji} ${fruits[i].name}`, radius - 40, 10);
-        ctx.restore();
-      }
-
-      // Draw Center Circle
-      ctx.beginPath();
-      ctx.arc(0, 0, 45, 0, 2 * Math.PI);
-      ctx.fillStyle = '#1e293b';
-      ctx.fill();
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = '#334155';
-      ctx.stroke();
-
-      ctx.restore();
+async function refreshWinners(){
+  if(!isLive){ $("winnersBar").style.display="none"; return; }
+  try{
+    const w = await fetch("/api/winners").then(r=>r.json());
+    if(!w.length){ $("winnersBar").style.display="none"; return; }
+    $("winnersBar").style.display="block";
+    $("winnersTrack").innerHTML = w.map(x =>
+      (x.jackpot ? "\u{1F3C6} <b style='color:var(--gold)'>JACKPOT</b> — " : "\u{1F981} ") +
+      x.name + " won <b>KSh " + (x.amount/100).toLocaleString("en-KE") + "</b>"
+    ).join('<span style="color:#5a4a1c"> &nbsp;\u2022&nbsp; </span>');
+    const jp = w.find(x => x.jackpot);
+    if(jp && jp.at > lastJackpotAt){
+      if(lastJackpotAt) $("hubMsg").textContent = "\u{1F3C6} " + jp.name + " just hit the JACKPOT!";
+      lastJackpotAt = jp.at;
     }
+  }catch(e){}
+}
+async function refreshPool(){
+  try{ const j = await fetch("/api/jackpot").then(r=>r.json());
+    $("jackpotPool").textContent = "KSh " + (j.pool/100).toLocaleString("en-KE"); }catch(e){}
+}
 
-    // Spin Logic
-    function spin() {
-      if (isSpinning || fruits.length < 2) return;
+function showPaybill(id){
+  $("paybillNote").innerHTML = "Or pay the paybill directly from your M-Pesa menu \u2014 "+
+    "Account number: <b style='color:var(--gold)'>SPIN"+id+"</b>. Your wallet credits automatically.";
+}
+function applyAccount(me){
+  myPhone = me.phone || "";
+  $("depPhone").value = me.phone ? "0"+me.phone.slice(3) : "";
+  const local = myPhone ? "0"+myPhone.slice(3) : "";
+  if(me.wht>0) $("wdDest").dataset.wht=me.wht;
+  $("wdDest").textContent = me.phone_verified
+    ? "Winnings go to your registered M-Pesa number "+local+". To change it, contact support."
+    : "Withdrawals unlock after your first successful deposit.";
+}
+function applyMode(live){
+  isLive = live;
+  $("modeBadge").style.display = live ? "none" : "inline";
 
-      isSpinning = true;
-      spinBtn.disabled = true;
+  // Demo mode: remove the money controls entirely rather than greying them out,
+  // so nothing in the interface suggests real cash is involved.
+  $("depositBtn").style.display = live ? "" : "none";
+  $("withdrawBtn").style.display = live ? "" : "none";
+  $("depositBtn").disabled = !live;
+  $("withdrawBtn").disabled = !live;
+  $("spinBtn").style.flex = live ? "" : "1 1 100%";
 
-      const numSlices = fruits.length;
-      const sliceAngle = (2 * Math.PI) / numSlices;
+  // close the money sheets if demo is switched on while one is open
+  if(!live){ close_("depositSheet"); close_("withdrawSheet"); close_("plSheet"); }
 
-      // Random target spins (between 5 to 8 full rotations plus random offset)
-      const extraSpins = 5 + Math.random() * 3;
-      const targetRotation = extraSpins * 2 * Math.PI;
-      const startAngle = currentAngle;
-      const totalRotation = startAngle + targetRotation;
+  // the credit meter should read as play money, not shillings
+  $("creditLabel").textContent = live ? "CREDIT KSh" : "DEMO CREDIT";
 
-      const duration = 4000; // ms
-      const startTime = performance.now();
+  if(!live) $("winnersBar").style.display="none"; else refreshWinners();
+}
 
-      function animate(currentTime) {
-        const elapsed = currentTime - startTime;
-        const progress = Math.min(elapsed / duration, 1);
+/* ---- auth ---- */
+async function boot(){
+  // The login sheet stays hidden until we know whether the stored session is
+  // still valid — otherwise it flashes on every load for signed-in players.
+  if(!token){ close_("bootSheet"); open_("authSheet"); return; }
+  try{
+    const me = await api("me");
+    setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("bootSheet"); close_("authSheet");
+    $("hubMsg").textContent = "Place your bets";
+  }catch(e){
+    token=null; localStorage.removeItem("fs_token");
+    close_("bootSheet"); open_("authSheet");
+  }
+}
+$("loginBtn").onclick = async ()=>{
+  try{ const d=await api("login",{email:$("email").value,password:$("password").value});
+    token=d.token; localStorage.setItem("fs_token",token); setBalance(d.balance);
+    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("bootSheet"); close_("authSheet");
+    $("hubMsg").textContent="Place your bets"; sfx.chip();
+  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
+};
+$("registerBtn").onclick = async ()=>{
+  try{ const d=await api("register",{email:$("email").value,password:$("password").value,
+      phone:$("regPhone").value,full_name:$("regName").value,id_number:$("regId").value,
+      over18:$("over18").checked});
+    token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
+    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("bootSheet"); close_("authSheet");
+    $("hubMsg").textContent = me.live ? "Deposit to play" : "Place your bets"; sfx.chip();
+  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
+};
 
-        // Cubic Easing Out
-        const easeOut = 1 - Math.pow(1 - progress, 3);
-        currentAngle = startAngle + (targetRotation * easeOut);
+/* ---- deposit ---- */
+$("depositBtn").onclick=()=>open_("depositSheet");
+$("depCancel").onclick=()=>close_("depositSheet");
+$("depGo").onclick = async ()=>{
+  try{
+    const d = await api("deposit/init",{amount: Number($("depAmount").value), phone: $("depPhone").value});
+    $("depErr").textContent = d.message;   // "Check your phone and enter your M-Pesa PIN."
+    const before = balance;
+    const poll = setInterval(async ()=>{
+      try{
+        const me = await api("me");
+        if(me.balance > before){ setBalance(me.balance); clearInterval(poll);
+          close_("depositSheet"); $("depErr").textContent="";
+          $("hubMsg").textContent="Credited. Good luck!"; sfx.win(); }
+      }catch(e){}
+    }, 4000);
+    setTimeout(()=>clearInterval(poll), 180000);
+  }catch(e){ $("depErr").textContent=e.message; sfx.error(); }
+};
 
-        // Calculate tick audio based on sector passing pointer (top = -90 degrees)
-        const normalizedAngle = (2 * Math.PI - (currentAngle % (2 * Math.PI))) % (2 * Math.PI);
-        const adjustedAngle = (normalizedAngle + Math.PI / 2) % (2 * Math.PI);
-        const currentSegment = Math.floor(adjustedAngle / sliceAngle) % numSlices;
+/* ---- withdraw ---- */
+$("withdrawBtn").onclick = ()=>{ $("wdErr").textContent=""; open_("withdrawSheet"); };
+$("wdCancel").onclick=()=>close_("withdrawSheet");
+$("wdGo").onclick = async ()=>{
+  const amt=Number($("wdAmount").value);
+  if(amt>70000){ close_("withdrawSheet"); $("plAmount").value=amt; open_("plSheet"); return; }
+  try{
+    const d = await api("withdraw",{amount:amt});
+    setBalance(d.balance); close_("withdrawSheet");
+    $("hubMsg").textContent=d.message; sfx.win();
+  }catch(e){ $("wdErr").textContent=e.message; sfx.error(); }
+};
+$("plCancel").onclick=()=>close_("plSheet");
+$("plGo").onclick = async ()=>{
+  try{
+    const d = await api("withdraw/pesalink",{amount:Number($("plAmount").value),
+      bank:$("plBank").value, account:$("plAcct").value});
+    setBalance(d.balance); close_("plSheet");
+    $("hubMsg").textContent=d.message; sfx.win();
+  }catch(e){ $("plErr").textContent=e.message; sfx.error(); }
+};
 
-        if (currentSegment !== lastSegmentIndex) {
-          playSound('tick');
-          lastSegmentIndex = currentSegment;
+/* ---- diamond bonus: pick 3 of 9 ---- */
+function playBonus(token){
+  return new Promise(resolve=>{
+    const grid=$("bonusGrid"); grid.innerHTML=""; let picked=[];
+    $("bonusTotal").textContent=""; $("bonusDone").style.display="none";
+    $("bonusMsg").textContent="Each tile hides a multiplier of your stake. Choose three.";
+    for(let i=0;i<9;i++){
+      const t=document.createElement("button");
+      t.textContent="?"; t.dataset.i=i;
+      t.style.cssText="aspect-ratio:1;font-size:20px;background:linear-gradient(#6a2a9e,#3d1560);color:#fff;box-shadow:0 3px 0 #24093a;border-radius:12px;padding:0";
+      t.onclick=async ()=>{
+        if(picked.length>=3||picked.includes(i)) return;
+        picked.push(i); t.disabled=true; t.style.opacity="1";
+        t.textContent="\u2726"; sfx.chip();
+        if(picked.length===3){
+          $("bonusMsg").textContent="Revealing…";
+          try{
+            const r=await api("bonus/pick",{token:token,picks:picked});
+            const rev={}; r.revealed.forEach(x=>rev[x.i]=x.mult);
+            [...grid.children].forEach((b,idx)=>{
+              b.disabled=true;
+              if(rev[idx]!=null){ b.textContent=rev[idx]+"\u00D7";
+                b.style.background="linear-gradient(#ffe08a,var(--gold))"; b.style.color="#241300"; }
+              else { b.textContent=r.all[idx]+"\u00D7"; b.style.opacity=".35"; }
+            });
+            setBalance(r.balance);
+            $("bonusTotal").innerHTML="BONUS WIN: KSh "+(r.payout/100).toLocaleString()+
+              (r.tax>0?"<br><span style='font-size:11px;color:#caa'>after KSh "+(r.tax/100).toLocaleString()+" withholding tax</span>":"");
+            $("bonusMsg").textContent="";
+            sfx.bigWin();
+            if(navigator.vibrate) navigator.vibrate([120,60,120,60,200]);
+            $("bonusDone").style.display="block";
+            $("bonusDone").onclick=()=>{ close_("bonusSheet"); stopMusic(); resolve(); };
+          }catch(e){
+            $("bonusMsg").textContent=e.message; sfx.error();
+            $("bonusDone").style.display="block";
+            $("bonusDone").onclick=()=>{ close_("bonusSheet"); resolve(); };
+          }
         }
+      };
+      grid.appendChild(t);
+    }
+    open_("bonusSheet");
+  });
+}
 
-        drawWheel();
+/* ---- present one spin outcome ---- */
+async function showOutcome(d,isRespin){
+  await chase(d.slot);
+  $("lastWin").textContent = money(d.payout);
+  if(d.jackpot>0){
+    // JACKPOT: gold/purple wave around the whole wheel + triumphant theme
+    $("hubMsg").textContent="JACKPOT! KSh "+(d.jackpot/100).toLocaleString();
+    $("hubNum").textContent="JP";
+    lightsRainbow(); sfx.jackpot(); setMusic("jackpot");
+    if(navigator.vibrate) navigator.vibrate([200,80,200,80,400]);
+    await new Promise(r=>setTimeout(r,4200));
+    stopLights(); stopMusic();
+  } else if(d.key==="bonus" && d.bonus){
+    // BONUS: purple breathing lights + mysterious theme through the pick game
+    $("hubMsg").textContent="\u{1F48E} DIAMOND BONUS!";
+    lightsPurplePulse(); sfx.bigWin(); setMusic("bonus");
+    if(navigator.vibrate) navigator.vibrate([150,60,150]);
+    await new Promise(r=>setTimeout(r,900));
+    await playBonus(d.bonus.token);
+    stopLights(); stopMusic();
+  } else if(d.key==="respin"){
+    // FREE SPIN: green blink, brief
+    $("hubMsg").textContent="\u{1F48E} FREE SPIN!";
+    lightsGreenFlash(); sfx.win();
+    if(navigator.vibrate) navigator.vibrate([100,50,100]);
+    await new Promise(r=>setTimeout(r,1100));
+    stopLights();
+  } else if(d.payout>0){
+    // WIN: only the winning slot pulses gold
+    $("hubMsg").innerHTML="WINNER! KSh "+(d.payout/100).toLocaleString()+
+      (d.tax>0?"<br><span style='font-size:9px'>after KSh "+(d.tax/100).toLocaleString()+" tax</span>":"");
+    lightsWinner(d.slot);
+    if(d.payout>=100000) sfx.bigWin(); else sfx.win();
+    if(navigator.vibrate) navigator.vibrate([80,40,80]);
+    await new Promise(r=>setTimeout(r,1600));
+    stopLights();
+  } else {
+    // NO WIN: name what landed and list what was actually staked, so there is
+    // never any doubt about which picks were live on this spin.
+    stopLights();
+    const key = WHEEL[d.slot];
+    const landed = ANIMALS[key];
+    const nice = n => n.charAt(0) + n.slice(1).toLowerCase();
+    const picks = Object.keys(lastBets).map(k => nice(ANIMALS[k].star ? "Star" : ANIMALS[k].n));
+    let label;
+    if(key === "diamond")      label = "Diamond — no win";
+    else if(key === "allprize") label = "No win — try again";
+    else                        label = "Landed on " + nice(landed.n);
+    if(picks.length) label += "  ·  you backed: " + picks.join(", ");
+    $("hubMsg").textContent = isRespin ? "Free spin — " + label : label;
+    sfx.lose();
+  }
+}
 
-        if (progress < 1) {
-          requestAnimationFrame(animate);
-        } else {
-          isSpinning = false;
-          spinBtn.disabled = false;
-          
-          // Determine Winner
-          const winningIndex = currentSegment;
-          const winner = fruits[winningIndex];
+/* ---- spin with light chase ---- */
+$("spinBtn").onclick = async ()=>{
+  if(spinning) return;
+  if(!Object.keys(bets).length){ $("hubMsg").textContent="Tap a symbol to bet first"; sfx.error(); return; }
+  ac(); // unlock audio on user gesture (browsers block autoplay before this)
+  spinning=true; $("spinBtn").disabled=true; $("hubMsg").textContent="";
+  $("bets").style.opacity=".55"; $("bets").style.pointerEvents="none";
+  sfx.spin();
+  lastBets = Object.assign({}, bets);     // kept for the result message
+  try{
+    const d = await api("spin",{bets});
+    await showOutcome(d,false);
+    if(d.respin) await showOutcome(d.respin,true);
+    setBalance(d.balance);
+    if(d.pool!=null) $("jackpotPool").textContent = "KSh " + (d.pool/100).toLocaleString("en-KE");
+    if(d.live===false) applyMode(false); else refreshWinners();
+  }catch(e){ stopLights(); stopMusic(); $("hubMsg").textContent=e.message; sfx.error(); }
+  $("bets").style.opacity=""; $("bets").style.pointerEvents="";
+  clearBets(); spinning=false; $("spinBtn").disabled=false; updateStakeTotal();
+  setMusic("idle");                        // ambient loop returns between rounds
+};
 
-          playSound('win');
-          showWinner(winner);
-          addHistory(winner);
-        }
+function chase(target){
+  return new Promise(res=>{
+    stopLights();
+    setMusic("spin");                       // driving loop while the wheel runs
+    const total = WHEEL.length*3 + target;
+    let i=0, delay=40;
+    (function step(){
+      slots.forEach(s=>s.classList.remove("lit"));
+      slots[i%WHEEL.length].classList.add("lit");
+      $("hubNum").textContent = String(i%WHEEL.length).padStart(2,"0");
+      sfx.tick();
+      if(i>=total){
+        stopMusic();                        // music stops exactly where the wheel stops
+        return setTimeout(res,400);
       }
+      i++; delay = i>total-10 ? delay+35 : delay;
+      setTimeout(step, delay);
+    })();
+  });
+}
 
-      requestAnimationFrame(animate);
-    }
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){ stopMusic(); } else if(!spinning && soundOn){ setMusic("idle"); }
+});
 
-    // UI Updates
-    function updateFruitList() {
-      fruitListEl.innerHTML = '';
-      fruits.forEach((fruit, index) => {
-        const item = document.createElement('div');
-        item.className = 'fruit-item';
-        item.innerHTML = `
-          <div class="fruit-info">
-            <span>${fruit.emoji}</span>
-            <span>${fruit.name}</span>
-          </div>
-          <button class="remove-btn" onclick="removeFruit(${index})">&times;</button>
-        `;
-        fruitListEl.appendChild(item);
-      });
-
-      drawWheel();
-    }
-
-    function removeFruit(index) {
-      if (isSpinning) return;
-      fruits.splice(index, 1);
-      updateFruitList();
-    }
-
-    function addHistory(winner) {
-      const emptyMsg = historyListEl.querySelector('div');
-      if (emptyMsg) emptyMsg.remove();
-
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const item = document.createElement('div');
-      item.className = 'history-item';
-      item.innerHTML = `
-        <span>${winner.emoji} ${winner.name}</span>
-        <span>${time}</span>
-      `;
-      historyListEl.prepend(item);
-    }
-
-    function showWinner(winner) {
-      modalEmoji.textContent = winner.emoji;
-      modalName.textContent = winner.name;
-      modal.classList.add('active');
-    }
-
-    // Event Listeners
-    spinBtn.addEventListener('click', spin);
-
-    soundBtn.addEventListener('click', () => {
-      soundEnabled = !soundEnabled;
-      soundBtn.textContent = soundEnabled ? '🔊' : '🔇';
-    });
-
-    addForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      if (isSpinning) return;
-
-      const emoji = document.getElementById('emojiInput').value.trim();
-      const name = document.getElementById('nameInput').value.trim();
-
-      if (emoji && name) {
-        const color = palette[fruits.length % palette.length];
-        fruits.push({ name, emoji, color });
-        updateFruitList();
-
-        document.getElementById('emojiInput').value = '';
-        document.getElementById('nameInput').value = '';
-      }
-    });
-
-    closeModal.addEventListener('click', () => {
-      modal.classList.remove('active');
-    });
-
-    // Initial Load
-    updateFruitList();
-  </script>
+(function(){
+  const touch = window.matchMedia("(hover:none)").matches;
+  $("betHint").textContent = touch
+    ? "Tap to stake · tap again to add more · press and hold to remove"
+    : "Click to stake · click again to add more · right-click to remove";
+})();
+updateStakeTotal();
+boot(); refreshPool(); refreshWinners();
+setInterval(refreshPool, 15000); setInterval(refreshWinners, 20000);
+</script>
 </body>
 </html>
