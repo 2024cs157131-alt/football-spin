@@ -772,4 +772,12 @@ app.get("/api/history", auth, async (req, res) => {
   res.json({ spins: spins.rows, tx: tx.rows });
 });
 
+/* Any error escaping a route returns JSON rather than leaving the request to
+ * hang — a hanging request is what shows up in the UI as "nothing happened". */
+app.use((err, _req, res, _next) => {
+  console.error("unhandled route error:", err && err.stack || err);
+  if (!res.headersSent)
+    res.status(500).json({ error: "Server error: " + (err && err.message || "unknown") });
+});
+
 module.exports = app;
