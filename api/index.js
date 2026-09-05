@@ -202,16 +202,22 @@ const WHEEL = ["star","star","allprize","zebra","giraffe","leopard","buffalo","d
  * ~70% of the time and diamond needs only two slots. Every bet still returns the
  * identical RTP. The unavoidable price is lower multipliers — at 32% RTP, a bet's
  * win rate times its payout is fixed, so winning more often means winning less. */
+/* Headline multipliers, minimum 5x. Every bet still returns the identical RTP,
+ * so a bigger multiplier simply lands more rarely. At the default 32% payout
+ * this means ~83% of spins are dead — raise the payout rate in the admin
+ * console to trade margin for a livelier wheel (50% payout -> 72% dead,
+ * 60% -> 66%). Players can stack several chips on one animal, and can back
+ * several animals at once, which raises their chance of hitting on any spin. */
 const BASE = [
-  { key: "star",     odds: 25,  w: 707,   scale: true },  // STAR — top two slots
-  { key: "star",     odds: 50,  w: 100,   scale: true },  // STAR — top prize
-  { key: "elephant", odds: 3,   w: 7560,  scale: true },  // Big Five
-  { key: "rhino",    odds: 2.8, w: 8100,  scale: true },  // Big Five
-  { key: "lion",     odds: 2.6, w: 8723,  scale: true },  // Big Five
-  { key: "buffalo",  odds: 2.4, w: 9450,  scale: true },  // Big Five
-  { key: "leopard",  odds: 2.2, w: 10309, scale: true },  // Big Five
-  { key: "giraffe",  odds: 2.1, w: 10800, scale: true },
-  { key: "zebra",    odds: 2,   w: 11340, scale: true },
+  { key: "star",     odds: 50,  w: 374,   scale: true },  // STAR — top two slots
+  { key: "star",     odds: 100, w: 40,    scale: true },  // STAR — top prize
+  { key: "elephant", odds: 30,  w: 756,   scale: true },  // Big Five
+  { key: "rhino",    odds: 25,  w: 907,   scale: true },  // Big Five
+  { key: "lion",     odds: 20,  w: 1134,  scale: true },  // Big Five
+  { key: "buffalo",  odds: 15,  w: 1512,  scale: true },  // Big Five
+  { key: "leopard",  odds: 12,  w: 1890,  scale: true },  // Big Five
+  { key: "giraffe",  odds: 8,   w: 2835,  scale: true },
+  { key: "zebra",    odds: 5,   w: 4536,  scale: true },
   { key: "allprize", odds: 2,   w: 1500,  scale: true },
   { key: "jackpot",  odds: 0,   w: 5 },      // ~1 in 20,000
   { key: "bonus",    odds: 0,   w: 462 },    // DIAMOND BONUS: pick 3 of 9
@@ -258,7 +264,7 @@ function drawOutcome(outcomes) {
   return outcomes[outcomes.length - 1];
 }
 function visualSlot(key, odds) {
-  if (key === "star") return odds === 50 ? 1 : 0;    // the two top slots
+  if (key === "star") return odds === 100 ? 1 : 0;   // the two top slots
   const visKey = (key === "jackpot" || key === "bonus" || key === "respin") ? "diamond" : key;
   const cands = WHEEL.map((k, i) => (k === visKey ? i : -1)).filter(i => i >= 0);
   return cands[crypto.randomInt(cands.length)];
