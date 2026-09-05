@@ -756,7 +756,7 @@ async function saveTax(){
 async function saveRtp(){
   var v=Number(document.getElementById("rtpInput").value);
   if(!(v>=8&&v<=90)){alert("Payout rate must be between 8% and 90%.");return}
-  if(!confirm("Set player payout to "+v+"% (house margin "+(100-v).toFixed(1)+"%)?\n\nThis changes the odds from the next spin and is recorded in the change log."))return;
+  if(!confirm("Set player payout to "+v+"% (house margin "+(100-v).toFixed(1)+"%)?\\n\\nThis changes the odds from the next spin and is recorded in the change log."))return;
   await api("/settings",{target_rtp:v});refresh();loadAudit();
 }
 async function solveMargin(apply){
@@ -875,13 +875,13 @@ document.getElementById("diagBtn").onclick=async function(){
     var txt=await r.text();
     try{
       var d=JSON.parse(txt);
-      out.textContent = "VERDICT: " + d.verdict + "\n\n" + JSON.stringify(d,null,2);
+      out.textContent = "VERDICT: " + d.verdict + "\\n\\n" + JSON.stringify(d,null,2);
     }catch(e){
-      out.textContent = "Server returned non-JSON (HTTP "+r.status+"):\n\n"+txt.slice(0,600);
+      out.textContent = "Server returned non-JSON (HTTP "+r.status+"):\\n\\n"+txt.slice(0,600);
     }
   }catch(e){
     out.textContent = "Could not reach the server: " + e.message +
-      "\n\nCheck the admin path in the URL matches ADMIN_PATH exactly.";
+      "\\n\\nCheck the admin path in the URL matches ADMIN_PATH exactly.";
   }
 };
 ["pw","code"].forEach(function(id){
@@ -890,7 +890,7 @@ document.getElementById("diagBtn").onclick=async function(){
 document.getElementById("btnMode").onclick=function(){toggle("live_mode")};
 document.getElementById("btnWd").onclick=function(){toggle("withdrawals_enabled")};
 document.getElementById("btnWht").onclick=function(){
-  if(S.wht_enabled&&!confirm("Stop deducting withholding tax?\n\nOnly do this if the law no longer requires it — withholding when required is a legal obligation."))return;
+  if(S.wht_enabled&&!confirm("Stop deducting withholding tax?\\n\\nOnly do this if the law no longer requires it — withholding when required is a legal obligation."))return;
   api("/settings",{wht_enabled:!S.wht_enabled}).then(refresh);
 };
 document.getElementById("taxSave").onclick=saveTax;
@@ -898,7 +898,7 @@ document.getElementById("taxSave").onclick=saveTax;
 document.getElementById("rtpSave").onclick=saveRtp;
 document.getElementById("netSolve").onclick=function(){solveMargin(false)};
 document.getElementById("netApply").onclick=function(){
-  if(!confirm("Set the payout rate to hit this net profit target?\n\nThis changes the odds from the next spin and is recorded in the change log."))return;
+  if(!confirm("Set the payout rate to hit this net profit target?\\n\\nThis changes the odds from the next spin and is recorded in the change log."))return;
   solveMargin(true);
 };
 document.getElementById("expAdd").onclick=addExpense;
