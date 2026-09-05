@@ -37,7 +37,7 @@
            text-shadow:0 0 8px rgba(255,59,48,.8)}
 
   /* wheel */
-  .wheel-wrap{position:relative;width:min(74vw,min(300px,34vh));aspect-ratio:1;margin:8px auto}
+  .wheel-wrap{position:relative;width:min(62vw,min(250px,26vh));aspect-ratio:1;margin:6px auto}
   .hub{position:absolute;inset:15%;border-radius:50%;
        background:radial-gradient(circle at 35% 30%, #2a1414, #0d0505 70%);
        border:3px solid var(--gold);display:grid;place-items:center;box-shadow:0 0 40px rgba(0,0,0,.6)}
@@ -53,16 +53,44 @@
   .slot.lit-green{box-shadow:0 0 0 4px #7bffa8, 0 0 24px 7px #14a44d;filter:brightness(1.3)}
   .slot em{font-style:normal;font-size:7px;display:block;text-align:center;line-height:1}
 
-  /* bet panel */
-  .bets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:0 12px;margin-top:4px}
-  .bet{background:var(--panel);border:2px solid #5a4a1c;border-radius:9px;padding:5px 2px 4px;
-       text-align:center;position:relative}
-  .bet.active{border-color:var(--gold);box-shadow:0 0 12px rgba(243,196,64,.45)}
-  .bet .dot{width:clamp(22px,7vw,28px);height:clamp(22px,7vw,28px);border-radius:50%;margin:0 auto 4px;display:grid;place-items:center;
-            font-family:'Russo One';font-size:7px;color:#fff;border:2px solid #fff3;overflow:hidden}
-  .bet small{display:block;font-size:9px;color:#ffb0d5}
-  .bet b{font-family:'Russo One';font-size:clamp(11px,3.3vw,13px);color:var(--led)}
-  .bet .amt{font-size:10px;color:var(--gold);min-height:14px}
+  /* bet panel — square 3x3 board, star in the middle */
+  .bets{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;
+        padding:0 12px;margin-top:6px;max-width:430px;margin-left:auto;margin-right:auto}
+  .bet{position:relative;aspect-ratio:1;background:var(--panel);
+       border:2px solid #4a3d18;border-radius:12px;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+       transition:transform .12s ease, border-color .12s, box-shadow .12s;
+       overflow:hidden;cursor:pointer;-webkit-user-select:none;user-select:none}
+  .bet .dot{width:44%;aspect-ratio:1;border-radius:50%;display:grid;place-items:center;
+            font-family:'Russo One';font-size:clamp(6px,1.9vw,8px);color:#fff;
+            border:2px solid rgba(255,255,255,.25);overflow:hidden;flex:0 0 auto}
+  .bet small{font-size:8px;letter-spacing:.5px;color:#c9a86a;line-height:1}
+  .bet b{font-family:'Russo One';font-size:clamp(11px,3.4vw,14px);color:var(--led);line-height:1}
+
+  /* SELECTED: gold frame, lifted, tinted, with a tick and the stake on the tile */
+  .bet.active{
+    border-color:var(--gold);
+    background:linear-gradient(160deg,#4a3708,#241703);
+    box-shadow:0 0 0 2px rgba(243,196,64,.35), 0 0 18px 3px rgba(243,196,64,.45);
+    transform:translateY(-3px) scale(1.04);
+  }
+  .bet.active b{color:#ffe08a}
+  .bet.active small{color:var(--gold)}
+  .bet .tick{position:absolute;top:4px;right:4px;width:17px;height:17px;border-radius:50%;
+    background:var(--gold);color:#241300;font-size:11px;font-weight:700;
+    display:none;place-items:center;line-height:1}
+  .bet.active .tick{display:grid}
+  .bet .amt{position:absolute;left:0;right:0;bottom:0;padding:2px 0;
+    background:var(--gold);color:#241300;font-family:'Russo One';font-size:clamp(9px,2.7vw,11px);
+    display:none}
+  .bet.active .amt{display:block}
+  .bet.bump{animation:bump .22s ease}
+  @keyframes bump{50%{transform:translateY(-6px) scale(1.1)}}
+
+  /* the ninth cell clears the board */
+  .bet.clear{background:#1a0f0f;border-style:dashed;border-color:#5a4a1c;
+    font-family:'Russo One';font-size:11px;color:#c9a86a;letter-spacing:1px}
+  .bet.clear:active{transform:scale(.96)}
 
   /* controls */
   .bar{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(#241010,#120707);
@@ -139,7 +167,12 @@
 </div>
 
 <!-- auth sheet -->
-<div class="sheet open" id="authSheet"><div class="card">
+<div class="sheet open" id="bootSheet"><div class="card" style="text-align:center">
+  <h2 style="margin-bottom:6px">SAFARI SPIN</h2>
+  <p style="font-size:13px;color:#e6c9c9">Checking your session\u2026</p>
+</div></div>
+
+<div class="sheet" id="authSheet"><div class="card">
   <h2>Sign in</h2>
   <label>Email</label><input id="email" type="email" autocomplete="email">
   <label>Full name — as on your ID (new accounts)</label><input id="regName" autocomplete="name">
@@ -210,19 +243,19 @@
 <script>
 /* ---- game data (must match server WHEEL order) ---- */
 const ANIMALS = {
-  star:{n:"\u2605",c:"#f3c440",odds:"50\u2013100",star:1},
-  elephant:{n:"ELEPHANT",c:"#78909c",odds:"15",big:1},
-  rhino:{n:"RHINO",c:"#546e7a",odds:"10",big:1},
-  lion:{n:"LION",c:"#c8862a",odds:"6",big:1},
-  buffalo:{n:"BUFFALO",c:"#6d4c41",odds:"4",big:1},
-  leopard:{n:"LEOPARD",c:"#e08a1e",odds:"3",big:1},
-  giraffe:{n:"GIRAFFE",c:"#d4a017",odds:"2.5"},
+  star:{n:"\u2605",c:"#f3c440",odds:"25\u201350",star:1},
+  elephant:{n:"ELEPHANT",c:"#78909c",odds:"3",big:1},
+  rhino:{n:"RHINO",c:"#546e7a",odds:"2.8",big:1},
+  lion:{n:"LION",c:"#c8862a",odds:"2.6",big:1},
+  buffalo:{n:"BUFFALO",c:"#6d4c41",odds:"2.4",big:1},
+  leopard:{n:"LEOPARD",c:"#e08a1e",odds:"2.2",big:1},
+  giraffe:{n:"GIRAFFE",c:"#d4a017",odds:"2.1"},
   zebra:{n:"ZEBRA",c:"#37474f",odds:"2"},
   allprize:{n:"ALL",c:"#7a1fa0"}, diamond:{n:"\u25C6",c:"#3a3ad0"},
 };
-const WHEEL = ["star","star","allprize","zebra","diamond","giraffe","leopard","diamond",
-  "zebra","buffalo","diamond","lion","elephant","diamond","giraffe","rhino","diamond","leopard",
-  "zebra","diamond","giraffe","buffalo","diamond","allprize"];
+const WHEEL = ["star","star","allprize","zebra","giraffe","leopard","buffalo","diamond",
+  "zebra","lion","rhino","elephant","giraffe","leopard","buffalo","zebra","lion","rhino",
+  "elephant","diamond","giraffe","leopard","buffalo","allprize"];
 const BETTABLE = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
 const CHIP_VALUES = [20,50,100,200];
 
@@ -354,7 +387,11 @@ async function api(path, body){
     headers:{ "Content-Type":"application/json", ...(token?{Authorization:"Bearer "+token}:{}) },
     body: body?JSON.stringify(body):undefined
   });
-  const d = await r.json();
+  const d = await r.json().catch(()=>({}));
+  if(r.status === 401 && token && path !== "login" && path !== "register"){
+    token=null; localStorage.removeItem("fs_token");
+    close_("bootSheet"); open_("authSheet");
+  }
   if(!r.ok) throw new Error(d.error||"Something went wrong.");
   return d;
 }
@@ -380,32 +417,71 @@ WHEEL.forEach((key,i)=>{
 });
 
 /* ---- build bet panel + chips ---- */
-BETTABLE.forEach(key=>{
-  const t=ANIMALS[key], el=document.createElement("div");
-  el.className="bet"; el.id="bet-"+key;
-  el.innerHTML='<div class="dot" style="background:'+t.c+'">'+t.n+'</div>'+
-    '<small>'+(t.star?"<span style=\'color:var(--gold)\'>\u2605 STAR</span>"
-      :(t.big?"<span style=\'color:var(--gold)\'>BIG 5</span>":"pays"))+'</small>'+
-    '<b>'+t.odds+'\u00D7</b><div class="amt" id="amt-'+key+'"></div>';
-  if(t.star){ el.style.borderColor="var(--gold)"; el.style.background="linear-gradient(#2a1c04,#160b0b)";
-    const d=el.querySelector(".dot"); d.style.fontSize="18px"; d.style.color="#241300"; }
-  else if(t.big) el.style.borderColor="#7a6420";
-  el.onclick=()=>{ if(spinning) return;
-    bets[key]=(bets[key]||0)+chip*100;
+/* 3x3 board. Star sits in the middle so the top prize reads as the centrepiece;
+   the ninth cell clears every stake. */
+const BOARD = ["elephant","rhino","lion",
+               "buffalo","star","leopard",
+               "giraffe","zebra","__clear__"];
+
+BOARD.forEach(key=>{
+  if(key === "__clear__"){
+    const c = document.createElement("div");
+    c.className = "bet clear"; c.id = "betClear";
+    c.textContent = "CLEAR";
+    c.onclick = ()=>{ if(!spinning){ clearBets(); sfx.chip(); } };
+    $("bets").appendChild(c);
+    return;
+  }
+  const t = ANIMALS[key], el = document.createElement("div");
+  el.className = "bet"; el.id = "bet-"+key;
+  el.innerHTML =
+    '<div class="tick">\u2713</div>' +
+    '<div class="dot" style="background:'+t.c+'">'+t.n+'</div>' +
+    '<small>'+(t.star ? "\u2605 STAR" : (t.big ? "BIG 5" : "PAYS"))+'</small>' +
+    '<b>'+t.odds+'\u00D7</b>' +
+    '<div class="amt" id="amt-'+key+'"></div>';
+
+  if(t.star){
+    el.style.borderColor = "#7a6420";
+    el.style.background = "linear-gradient(160deg,#2a1c04,#160b0b)";
+    const d = el.querySelector(".dot");
+    d.style.fontSize = "20px"; d.style.color = "#241300";
+  }
+
+  el.onclick = ()=>{
+    if(spinning) return;
+    bets[key] = (bets[key]||0) + chip*100;
     el.classList.add("active");
-    $("amt-"+key).textContent="KSh "+(bets[key]/100).toLocaleString();
+    $("amt-"+key).textContent = "KSh "+(bets[key]/100).toLocaleString();
+    el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
+    updateStakeTotal();
     ac(); sfx.chip();
-    if(!music.mood) setMusic("idle");      // ambient starts on the first bet
+    if(!music.mood) setMusic("idle");
   };
-  el.oncontextmenu=e=>{e.preventDefault(); delete bets[key];
-    el.classList.remove("active"); $("amt-"+key).textContent="";};
+  // long-press or right-click removes just this stake
+  el.oncontextmenu = e=>{ e.preventDefault(); clearOne(key); };
+  let lp;
+  el.addEventListener("touchstart", ()=>{ lp = setTimeout(()=>clearOne(key), 500); }, {passive:true});
+  ["touchend","touchmove","touchcancel"].forEach(ev =>
+    el.addEventListener(ev, ()=>clearTimeout(lp), {passive:true}));
+
   if(!t.star){
-    const dimg=new Image(); dimg.src="logos/"+key+".png";
-    dimg.onload=()=>{ const d=el.querySelector(".dot");
-      d.style.background="#fff url(logos/"+key+".png) center/cover no-repeat"; d.textContent=""; };
+    const dimg = new Image(); dimg.src = "logos/"+key+".png";
+    dimg.onload = ()=>{ const d = el.querySelector(".dot");
+      d.style.background = "#fff url(logos/"+key+".png) center/cover no-repeat"; d.textContent = ""; };
   }
   $("bets").appendChild(el);
 });
+
+function clearOne(key){
+  if(spinning || !bets[key]) return;
+  delete bets[key];
+  $("bet-"+key).classList.remove("active");
+  $("amt-"+key).textContent = "";
+  updateStakeTotal();
+  sfx.chip();
+}
+
 CHIP_VALUES.forEach(v=>{
   const b=document.createElement("button");
   b.className="chip"+(v===chip?" sel":""); b.textContent=v;
@@ -413,7 +489,22 @@ CHIP_VALUES.forEach(v=>{
   $("chips").appendChild(b);
 });
 
-function clearBets(){ bets={}; BETTABLE.forEach(k=>{ $("bet-"+k).classList.remove("active"); $("amt-"+k).textContent=""; }); }
+function clearBets(){
+  bets = {};
+  BETTABLE.forEach(k=>{
+    const el = $("bet-"+k);
+    if(el){ el.classList.remove("active","bump"); }
+    const a = $("amt-"+k); if(a) a.textContent = "";
+  });
+  updateStakeTotal();
+}
+
+/* running total so the player always sees what this spin costs */
+function updateStakeTotal(){
+  const total = Object.values(bets).reduce((s,v)=>s+v,0);
+  const btn = $("spinBtn");
+  btn.textContent = total ? "SPIN \u00B7 KSh "+(total/100).toLocaleString() : "START";
+}
 function setBalance(k){ balance=k; $("balance").textContent=money(k); }
 
 async function refreshWinners(){
@@ -460,17 +551,25 @@ function applyMode(live){
 
 /* ---- auth ---- */
 async function boot(){
-  if(!token) return;
-  try{ const me = await api("me"); setBalance(me.balance);
-    applyMode(me.live); applyAccount(me);
-    close_("authSheet"); $("hubMsg").textContent="Place your bets"; }
-  catch(e){ token=null; localStorage.removeItem("fs_token"); }
+  // The login sheet stays hidden until we know whether the stored session is
+  // still valid — otherwise it flashes on every load for signed-in players.
+  if(!token){ close_("bootSheet"); open_("authSheet"); return; }
+  try{
+    const me = await api("me");
+    setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    close_("bootSheet"); close_("authSheet");
+    $("hubMsg").textContent = "Place your bets";
+  }catch(e){
+    token=null; localStorage.removeItem("fs_token");
+    close_("bootSheet"); open_("authSheet");
+  }
 }
 $("loginBtn").onclick = async ()=>{
   try{ const d=await api("login",{email:$("email").value,password:$("password").value});
     token=d.token; localStorage.setItem("fs_token",token); setBalance(d.balance);
     const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
-    close_("authSheet"); $("hubMsg").textContent="Place your bets"; sfx.chip();
+    close_("bootSheet"); close_("authSheet");
+    $("hubMsg").textContent="Place your bets"; sfx.chip();
   }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
 };
 $("registerBtn").onclick = async ()=>{
@@ -479,7 +578,8 @@ $("registerBtn").onclick = async ()=>{
       over18:$("over18").checked});
     token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
     const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
-    close_("authSheet"); $("hubMsg").textContent="Deposit to play"; sfx.chip();
+    close_("bootSheet"); close_("authSheet");
+    $("hubMsg").textContent="Deposit to play"; sfx.chip();
   }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
 };
 
@@ -625,6 +725,7 @@ $("spinBtn").onclick = async ()=>{
   if(!Object.keys(bets).length){ $("hubMsg").textContent="Tap a symbol to bet first"; sfx.error(); return; }
   ac(); // unlock audio on user gesture (browsers block autoplay before this)
   spinning=true; $("spinBtn").disabled=true; $("hubMsg").textContent="";
+  $("bets").style.opacity=".55"; $("bets").style.pointerEvents="none";
   sfx.spin();
   try{
     const d = await api("spin",{bets});
@@ -634,7 +735,8 @@ $("spinBtn").onclick = async ()=>{
     if(d.pool!=null) $("jackpotPool").textContent = "KSh " + (d.pool/100).toLocaleString("en-KE");
     if(d.live===false) applyMode(false); else refreshWinners();
   }catch(e){ stopLights(); stopMusic(); $("hubMsg").textContent=e.message; sfx.error(); }
-  clearBets(); spinning=false; $("spinBtn").disabled=false;
+  $("bets").style.opacity=""; $("bets").style.pointerEvents="";
+  clearBets(); spinning=false; $("spinBtn").disabled=false; updateStakeTotal();
   setMusic("idle");                        // ambient loop returns between rounds
 };
 
@@ -663,6 +765,7 @@ document.addEventListener("visibilitychange",()=>{
   if(document.hidden){ stopMusic(); } else if(!spinning && soundOn){ setMusic("idle"); }
 });
 
+updateStakeTotal();
 boot(); refreshPool(); refreshWinners();
 setInterval(refreshPool, 15000); setInterval(refreshWinners, 20000);
 </script>
