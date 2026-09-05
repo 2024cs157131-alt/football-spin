@@ -79,6 +79,9 @@
     transform:translateY(-2px) scale(1.03)}
   .bet.active b{color:#ffe08a}
   .bet.active small{color:var(--gold)}
+  .bet .reps{position:absolute;top:2px;left:2px;min-width:15px;height:15px;padding:0 3px;
+    border-radius:8px;background:#d92c20;color:#fff;font-family:'Russo One';font-size:9px;
+    display:none;place-items:center;line-height:1}
   .bet .tick{position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;
     background:var(--gold);color:#241300;font-size:9px;font-weight:700;
     display:none;place-items:center;line-height:1}
@@ -241,14 +244,14 @@
 <script>
 /* ---- game data (must match server WHEEL order) ---- */
 const ANIMALS = {
-  star:{n:"\u2605",c:"#f3c440",odds:"25\u201350",star:1},
-  elephant:{n:"ELEPHANT",c:"#78909c",odds:"3",big:1},
-  rhino:{n:"RHINO",c:"#546e7a",odds:"2.8",big:1},
-  lion:{n:"LION",c:"#c8862a",odds:"2.6",big:1},
-  buffalo:{n:"BUFFALO",c:"#6d4c41",odds:"2.4",big:1},
-  leopard:{n:"LEOPARD",c:"#e08a1e",odds:"2.2",big:1},
-  giraffe:{n:"GIRAFFE",c:"#d4a017",odds:"2.1"},
-  zebra:{n:"ZEBRA",c:"#37474f",odds:"2"},
+  star:{n:"\u2605",c:"#f3c440",odds:"50\u2013100",star:1},
+  elephant:{n:"ELEPHANT",c:"#78909c",odds:"30",big:1},
+  rhino:{n:"RHINO",c:"#546e7a",odds:"25",big:1},
+  lion:{n:"LION",c:"#c8862a",odds:"20",big:1},
+  buffalo:{n:"BUFFALO",c:"#6d4c41",odds:"15",big:1},
+  leopard:{n:"LEOPARD",c:"#e08a1e",odds:"12",big:1},
+  giraffe:{n:"GIRAFFE",c:"#d4a017",odds:"8"},
+  zebra:{n:"ZEBRA",c:"#37474f",odds:"5"},
   allprize:{n:"ALL",c:"#7a1fa0"}, diamond:{n:"\u25C6",c:"#3a3ad0"},
 };
 const WHEEL = ["star","star","allprize","zebra","giraffe","leopard","buffalo","diamond",
@@ -257,6 +260,7 @@ const WHEEL = ["star","star","allprize","zebra","giraffe","leopard","buffalo","d
 const BETTABLE = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
 const CHIP_VALUES = [20,50,100,200];
 
+let stakeTaps = {};
 let token = localStorage.getItem("fs_token") || null;
 let balance = 0, bets = {}, chip = 20, spinning = false;
 let lastJackpotAt = 0, isLive = true, myPhone = "";
@@ -436,7 +440,7 @@ BOARD.forEach(key=>{
   const t = ANIMALS[key], el = document.createElement("div");
   el.className = "bet"; el.id = "bet-"+key;
   el.innerHTML =
-    '<div class="tick">\u2713</div>' +
+    '<div class="tick">\u2713</div><div class="reps"></div>' +
     '<div class="dot" style="background:'+t.c+'">'+t.n+'</div>' +
     '<small>'+(t.star ? "\u2605 STAR" : (t.big ? "BIG 5" : "PAYS"))+'</small>' +
     '<b>'+t.odds+'\u00D7</b>' +
@@ -452,8 +456,11 @@ BOARD.forEach(key=>{
   el.onclick = ()=>{
     if(spinning) return;
     bets[key] = (bets[key]||0) + chip*100;
+    stakeTaps[key] = (stakeTaps[key]||0) + 1;
     el.classList.add("active");
     $("amt-"+key).textContent = "KSh "+(bets[key]/100).toLocaleString();
+    const badge = el.querySelector(".reps");
+    if(stakeTaps[key] > 1){ badge.textContent = "\u00D7"+stakeTaps[key]; badge.style.display="grid"; }
     el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
     updateStakeTotal();
     ac(); sfx.chip();
@@ -476,8 +483,10 @@ BOARD.forEach(key=>{
 
 function clearOne(key){
   if(spinning || !bets[key]) return;
-  delete bets[key];
-  $("bet-"+key).classList.remove("active");
+  delete bets[key]; delete stakeTaps[key];
+  const el = $("bet-"+key);
+  el.classList.remove("active");
+  const b = el.querySelector(".reps"); if(b){ b.style.display="none"; b.textContent=""; }
   $("amt-"+key).textContent = "";
   updateStakeTotal();
   sfx.chip();
@@ -500,10 +509,11 @@ CHIP_VALUES.forEach(v=>{
 });
 
 function clearBets(){
-  bets = {};
+  bets = {}; stakeTaps = {};
   BETTABLE.forEach(k=>{
     const el = $("bet-"+k);
-    if(el){ el.classList.remove("active","bump"); }
+    if(el){ el.classList.remove("active","bump");
+      const b = el.querySelector(".reps"); if(b){ b.style.display="none"; b.textContent=""; } }
     const a = $("amt-"+k); if(a) a.textContent = "";
   });
   updateStakeTotal();
