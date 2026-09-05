@@ -30,12 +30,16 @@ const psHeaders = {
   "Content-Type": "application/json",
 };
 
+/* Neon presents a certificate from a public CA, so the connection is fully
+ * verified. Put `sslmode=verify-full` in DATABASE_URL to match — `require`
+ * still works today but will mean "encrypt without checking the certificate"
+ * in a future pg release, which is not what we want for player data. */
 const pool = new Pool({
   connectionString: DATABASE_URL,
   max: 3,
   connectionTimeoutMillis: 8000,
   idleTimeoutMillis: 10000,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: true },
 });
 pool.on("error", (e) => console.error("pg pool error:", e.message));
 
