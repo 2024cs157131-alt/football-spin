@@ -65,6 +65,7 @@ async function init() {
       `CREATE TABLE IF NOT EXISTS settings_audit(
         id SERIAL PRIMARY KEY, key TEXT, old_value TEXT, new_value TEXT, created BIGINT)`,
       `CREATE TABLE IF NOT EXISTS admin_attempts(id SERIAL PRIMARY KEY, ts BIGINT)`,
+      `ALTER TABLE admin_attempts ADD COLUMN IF NOT EXISTS ip TEXT`,
       `CREATE TABLE IF NOT EXISTS jackpot(id INT PRIMARY KEY DEFAULT 1, pool BIGINT DEFAULT 500000)`,
       `INSERT INTO jackpot(id) VALUES(1) ON CONFLICT DO NOTHING`,
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS demo_balance BIGINT DEFAULT 100000`,
@@ -172,11 +173,12 @@ async function darajaToken() {
  */
 /* Slots 0 and 1 (top of the wheel) are the STAR — a special symbol, not an
  * animal — paying 50x and 100x. The rest are the Big Five plus two commons. */
-/* 24 display slots. Diamond has SEVEN positions spread around the wheel so a
- * non-winning spin doesn't stop on the same spot every time. */
-const WHEEL = ["star","star","allprize","zebra","diamond","giraffe","leopard","diamond",
-  "zebra","buffalo","diamond","lion","elephant","diamond","giraffe","rhino","diamond","leopard",
-  "zebra","diamond","giraffe","buffalo","diamond","allprize"];
+/* 24 display slots: two star, two all-prize, two diamond, and eighteen animal
+ * positions. Most losing spins now land on an animal that simply isn't the
+ * one the player backed, rather than on a dead diamond. */
+const WHEEL = ["star","star","allprize","zebra","giraffe","leopard","buffalo","diamond",
+  "zebra","lion","rhino","elephant","giraffe","leopard","buffalo","zebra","lion","rhino",
+  "elephant","diamond","giraffe","leopard","buffalo","allprize"];
 /* Weights are derived from the target RTP set in the admin console, so the
  * payout rate can be tuned without editing code. Base table = 32% RTP; every
  * animal/all-prize weight scales by k, and `diamond` absorbs the difference,
@@ -191,17 +193,22 @@ const WHEEL = ["star","star","allprize","zebra","diamond","giraffe","leopard","d
  * lands on a real symbol ~42% of the time instead of ~17%, and a single-animal
  * bettor wins about twice as often. Every bet still returns identical RTP; the
  * price of the livelier wheel is lower top multipliers. */
+/* A player loses whenever the wheel misses THEIR pick, so nearly all of the old
+ * dead diamond weight now sits on the animals: the wheel lands on a real symbol
+ * ~70% of the time and diamond needs only two slots. Every bet still returns the
+ * identical RTP. The unavoidable price is lower multipliers — at 32% RTP, a bet's
+ * win rate times its payout is fixed, so winning more often means winning less. */
 const BASE = [
-  { key: "star",     odds: 50,  w: 334,   scale: true },  // STAR — top two slots
-  { key: "star",     odds: 100, w: 40,    scale: true },  // STAR — top prize
-  { key: "elephant", odds: 15,  w: 1379,  scale: true },  // Big Five
-  { key: "rhino",    odds: 10,  w: 2068,  scale: true },  // Big Five
-  { key: "lion",     odds: 6,   w: 3447,  scale: true },  // Big Five
-  { key: "buffalo",  odds: 4,   w: 5170,  scale: true },  // Big Five
-  { key: "leopard",  odds: 3,   w: 6893,  scale: true },  // Big Five
-  { key: "giraffe",  odds: 2.5, w: 8272,  scale: true },
-  { key: "zebra",    odds: 2,   w: 10340, scale: true },
-  { key: "allprize", odds: 2,   w: 2500,  scale: true },
+  { key: "star",     odds: 25,  w: 707,   scale: true },  // STAR — top two slots
+  { key: "star",     odds: 50,  w: 100,   scale: true },  // STAR — top prize
+  { key: "elephant", odds: 3,   w: 7560,  scale: true },  // Big Five
+  { key: "rhino",    odds: 2.8, w: 8100,  scale: true },  // Big Five
+  { key: "lion",     odds: 2.6, w: 8723,  scale: true },  // Big Five
+  { key: "buffalo",  odds: 2.4, w: 9450,  scale: true },  // Big Five
+  { key: "leopard",  odds: 2.2, w: 10309, scale: true },  // Big Five
+  { key: "giraffe",  odds: 2.1, w: 10800, scale: true },
+  { key: "zebra",    odds: 2,   w: 11340, scale: true },
+  { key: "allprize", odds: 2,   w: 1500,  scale: true },
   { key: "jackpot",  odds: 0,   w: 5 },      // ~1 in 20,000
   { key: "bonus",    odds: 0,   w: 462 },    // DIAMOND BONUS: pick 3 of 9
   { key: "respin",   odds: 0,   w: 1000 },   // DIAMOND RESPIN: one free spin
@@ -247,7 +254,7 @@ function drawOutcome(outcomes) {
   return outcomes[outcomes.length - 1];
 }
 function visualSlot(key, odds) {
-  if (key === "star") return odds === 100 ? 1 : 0;   // the two top slots
+  if (key === "star") return odds === 50 ? 1 : 0;    // the two top slots
   const visKey = (key === "jackpot" || key === "bonus" || key === "respin") ? "diamond" : key;
   const cands = WHEEL.map((k, i) => (k === visKey ? i : -1)).filter(i => i >= 0);
   return cands[crypto.randomInt(cands.length)];
