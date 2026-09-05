@@ -136,7 +136,7 @@
 
 <div class="boards">
   <div class="board"><small>BONUS-WIN</small><b id="lastWin">0.00</b></div>
-  <div class="board"><small>CREDIT KSh</small><b id="balance">0.00</b></div>
+  <div class="board"><small id="creditLabel">CREDIT KSh</small><b id="balance">0.00</b></div>
 </div>
 
 <div style="margin:5px 12px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
@@ -565,7 +565,21 @@ function applyAccount(me){
 function applyMode(live){
   isLive = live;
   $("modeBadge").style.display = live ? "none" : "inline";
-  $("depositBtn").disabled = !live; $("withdrawBtn").disabled = !live;
+
+  // Demo mode: remove the money controls entirely rather than greying them out,
+  // so nothing in the interface suggests real cash is involved.
+  $("depositBtn").style.display = live ? "" : "none";
+  $("withdrawBtn").style.display = live ? "" : "none";
+  $("depositBtn").disabled = !live;
+  $("withdrawBtn").disabled = !live;
+  $("spinBtn").style.flex = live ? "" : "1 1 100%";
+
+  // close the money sheets if demo is switched on while one is open
+  if(!live){ close_("depositSheet"); close_("withdrawSheet"); close_("plSheet"); }
+
+  // the credit meter should read as play money, not shillings
+  $("creditLabel").textContent = live ? "CREDIT KSh" : "DEMO CREDIT";
+
   if(!live) $("winnersBar").style.display="none"; else refreshWinners();
 }
 
@@ -599,7 +613,7 @@ $("registerBtn").onclick = async ()=>{
     token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
     const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
     close_("bootSheet"); close_("authSheet");
-    $("hubMsg").textContent="Deposit to play"; sfx.chip();
+    $("hubMsg").textContent = me.live ? "Deposit to play" : "Place your bets"; sfx.chip();
   }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
 };
 
