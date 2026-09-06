@@ -218,7 +218,7 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
   /* ----- dashboard stats ----- */
   app.get(`${P}/stats`, adminAuth, async (_req, res) => {
     const [users, dep, wd, daily, jack, st, pend, taxq, plq, expDaily, expAll] = await Promise.all([
-      pool.query("SELECT COUNT(*) c, COALESCE(SUM(balance),0) bal FROM users"),
+      pool.query("SELECT COUNT(*) c, COALESCE(SUM(balance),0)+COALESCE(SUM(winnings),0) bal FROM users"),
       pool.query("SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM tx WHERE kind='deposit' AND status='success'"),
       pool.query("SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM tx WHERE kind='withdraw' AND status='success'"),
       pool.query(`SELECT to_char(to_timestamp(created/1000),'YYYY-MM-DD') d,
@@ -402,7 +402,7 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
       try {
         await client.query("BEGIN");
         await client.query("UPDATE tx SET status='failed' WHERE id=$1", [t.id]);
-        await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [t.user_id, Number(t.amount)]);
+        await client.query("UPDATE users SET winnings=winnings+$2 WHERE id=$1", [t.user_id, Number(t.amount)]);
         await client.query("COMMIT");
       } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
     } else return res.status(400).json({ error: "Unknown action." });
@@ -700,7 +700,7 @@ async function refresh(){
     ["Players",s.players],
     ["Deposits (all-time)",K(s.deposits.total)],
     ["Withdrawals (all-time)",K(s.withdrawals.total)],
-    ["Player balances (liability)",K(s.player_balances)],
+    ["Player funds (liability)",K(s.player_balances)],
     ["Pending payouts",s.pending_withdrawals.count+" / "+K(s.pending_withdrawals.total)],
     ["Jackpot pool",K(s.jackpot_pool)],
     ["WHT collected (owed to KRA)",K(s.wht_collected)],
