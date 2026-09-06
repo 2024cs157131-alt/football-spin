@@ -160,8 +160,16 @@
 </header>
 
 <div class="boards">
-  <div class="board"><small>BONUS-WIN</small><b id="lastWin">0.00</b></div>
   <div class="board"><small id="creditLabel">CREDIT KSh</small><b id="balance">0.00</b></div>
+  <div class="board" id="winBoard" style="border-color:#3fb950">
+    <small style="color:#7ee2a8">WINNINGS KSh</small><b id="winnings" style="color:#3fb950">0.00</b>
+  </div>
+</div>
+<div id="moveRow" style="display:none;padding:4px 12px 0">
+  <button id="moveBtn" style="width:100%;padding:7px 0;font-size:12px;
+    background:linear-gradient(#7ee2a8,#2f9e5a);color:#06240f;box-shadow:0 3px 0 #1d6b3c">
+    MOVE WINNINGS TO CREDIT
+  </button>
 </div>
 
 <div style="margin:5px 12px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
@@ -179,7 +187,8 @@
 @media (prefers-reduced-motion: reduce){#winnersTrack{animation:none;padding-left:8px}}</style>
 
 <div class="wheel-wrap" id="wheel">
-  <div class="hub"><div class="num" id="hubNum">--</div><div class="msg" id="hubMsg">Log in to play</div></div>
+  <div class="hub"><div class="num" id="hubNum">--</div><div class="msg" id="hubMsg">Log in to play</div>
+  <div id="lastWin" style="display:none"></div></div>
 </div>
 
 <div class="bets" id="bets"></div>
@@ -593,6 +602,15 @@ function updateStakeTotal(){
 }
 function setBalance(k){ balance=k; $("balance").textContent=money(k); }
 
+/* Winnings sit apart from playable credit — they are never staked unless the
+   player moves them across, or withdraws them. */
+let winnings = 0;
+function setWinnings(k){
+  winnings = Number(k) || 0;
+  $("winnings").textContent = money(winnings);
+  $("moveRow").style.display = winnings > 0 ? "block" : "none";
+}
+
 async function refreshWinners(){
   if(!isLive){ $("winnersBar").style.display="none"; return; }
   try{
@@ -645,6 +663,7 @@ function applyMode(live){
 
   // the credit meter should read as play money, not shillings
   $("creditLabel").textContent = live ? "CREDIT KSh" : "DEMO CREDIT";
+  $("winBoard").querySelector("small").textContent = live ? "WINNINGS KSh" : "DEMO WINNINGS";
 
   if(!live) $("winnersBar").style.display="none"; else refreshWinners();
 }
@@ -656,7 +675,8 @@ async function boot(){
   if(!token){ showPane("login"); close_("bootSheet"); open_("authSheet"); return; }
   try{
     const me = await api("me");
-    setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+    setBalance(me.balance); setWinnings(me.winnings);
+    showPaybill(me.id); applyMode(me.live); applyAccount(me);
     close_("bootSheet"); close_("authSheet");
     $("hubMsg").textContent = "Place your bets";
   }catch(e){
@@ -674,7 +694,8 @@ $("toLogin").onclick    = e=>{ e.preventDefault(); showPane("login"); };
 
 async function enterGame(msg){
   const me = await api("me");
-  setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+  setBalance(me.balance); setWinnings(me.winnings);
+  showPaybill(me.id); applyMode(me.live); applyAccount(me);
   close_("bootSheet"); close_("authSheet");
   showPane("login");                       // next visit opens on sign-in
   $("hubMsg").textContent = msg;
@@ -716,7 +737,7 @@ $("depGo").onclick = async ()=>{
     const poll = setInterval(async ()=>{
       try{
         const me = await api("me");
-        if(me.balance > before){ setBalance(me.balance); clearInterval(poll);
+        if(me.balance > before){ setBalance(me.balance); setWinnings(me.winnings); clearInterval(poll);
           close_("depositSheet"); $("depErr").textContent="";
           $("hubMsg").textContent="Credited. Good luck!"; sfx.win(); }
       }catch(e){}
@@ -726,6 +747,17 @@ $("depGo").onclick = async ()=>{
 };
 
 /* ---- withdraw ---- */
+$("moveBtn").onclick = async ()=>{
+  if(spinning || winnings <= 0) return;
+  const btn = $("moveBtn"); btn.disabled = true;
+  try{
+    const d = await api("move",{});                 // no amount = move it all
+    setBalance(d.balance); setWinnings(d.winnings);
+    $("hubMsg").textContent = d.message; sfx.chip();
+  }catch(e){ $("hubMsg").textContent = e.message; sfx.error(); }
+  finally{ btn.disabled = false; }
+};
+
 $("withdrawBtn").onclick = ()=>{ $("wdErr").textContent=""; open_("withdrawSheet"); };
 $("wdCancel").onclick=()=>close_("withdrawSheet");
 $("wdGo").onclick = async ()=>{
@@ -733,7 +765,7 @@ $("wdGo").onclick = async ()=>{
   if(amt>70000){ close_("withdrawSheet"); $("plAmount").value=amt; open_("plSheet"); return; }
   try{
     const d = await api("withdraw",{amount:amt});
-    setBalance(d.balance); close_("withdrawSheet");
+    setBalance(d.balance); setWinnings(d.winnings); close_("withdrawSheet");
     $("hubMsg").textContent=d.message; sfx.win();
   }catch(e){ $("wdErr").textContent=e.message; sfx.error(); }
 };
@@ -742,7 +774,7 @@ $("plGo").onclick = async ()=>{
   try{
     const d = await api("withdraw/pesalink",{amount:Number($("plAmount").value),
       bank:$("plBank").value, account:$("plAcct").value});
-    setBalance(d.balance); close_("plSheet");
+    setBalance(d.balance); setWinnings(d.winnings); close_("plSheet");
     $("hubMsg").textContent=d.message; sfx.win();
   }catch(e){ $("plErr").textContent=e.message; sfx.error(); }
 };
@@ -772,7 +804,7 @@ function playBonus(token){
                 b.style.background="linear-gradient(#ffe08a,var(--gold))"; b.style.color="#241300"; }
               else { b.textContent=r.all[idx]+"\u00D7"; b.style.opacity=".35"; }
             });
-            setBalance(r.balance);
+            setBalance(r.balance); setWinnings(r.winnings);
             $("bonusTotal").innerHTML="BONUS WIN: KSh "+(r.payout/100).toLocaleString()+
               (r.tax>0?"<br><span style='font-size:11px;color:#caa'>after KSh "+(r.tax/100).toLocaleString()+" withholding tax</span>":"");
             $("bonusMsg").textContent="";
@@ -830,19 +862,9 @@ async function showOutcome(d,isRespin){
     await new Promise(r=>setTimeout(r,1600));
     stopLights();
   } else {
-    // NO WIN: name what landed and list what was actually staked, so there is
-    // never any doubt about which picks were live on this spin.
+    // The wheel already shows where it stopped — keep this short.
     stopLights();
-    const key = WHEEL[d.slot];
-    const landed = ANIMALS[key];
-    const nice = n => n.charAt(0) + n.slice(1).toLowerCase();
-    const picks = Object.keys(lastBets).map(k => nice(ANIMALS[k].star ? "Star" : ANIMALS[k].n));
-    let label;
-    if(key === "diamond")      label = "Diamond — no win";
-    else if(key === "allprize") label = "No win — try again";
-    else                        label = "Landed on " + nice(landed.n);
-    if(picks.length) label += "  ·  you backed: " + picks.join(", ");
-    $("hubMsg").textContent = isRespin ? "Free spin — " + label : label;
+    $("hubMsg").textContent = isRespin ? "Free spin — no win" : "No win";
     sfx.lose();
   }
 }
@@ -860,10 +882,16 @@ $("spinBtn").onclick = async ()=>{
     const d = await api("spin",{bets});
     await showOutcome(d,false);
     if(d.respin) await showOutcome(d.respin,true);
-    setBalance(d.balance);
+    setBalance(d.balance); setWinnings(d.winnings);
     if(d.pool!=null) $("jackpotPool").textContent = "KSh " + (d.pool/100).toLocaleString("en-KE");
     if(d.live===false) applyMode(false); else refreshWinners();
-  }catch(e){ stopLights(); stopMusic(); $("hubMsg").textContent=e.message; sfx.error(); }
+  }catch(e){
+    stopLights(); stopMusic();
+    $("hubMsg").textContent = (/Insufficient|demo credit/i.test(e.message) && winnings > 0)
+      ? "Out of credit — move your winnings across to keep playing"
+      : e.message;
+    sfx.error();
+  }
   $("bets").style.opacity=""; $("bets").style.pointerEvents="";
   clearBets(); spinning=false; $("spinBtn").disabled=false; updateStakeTotal();
   setMusic("idle");                        // ambient loop returns between rounds
