@@ -293,12 +293,22 @@ app.post("/api/register", async (req, res) => {
   } catch { res.status(400).json({ error: "That email, phone, or ID number is already registered." }); }
 });
 
+/* Sign in with the M-Pesa number. Email is still accepted so older accounts
+ * and support cases keep working. */
 app.post("/api/login", async (req, res) => {
-  const { email, password } = req.body || {};
-  const r = await pool.query("SELECT * FROM users WHERE email=$1", [(email || "").toLowerCase().trim()]);
+  const { phone, email, password } = req.body || {};
+  const raw = String(phone || email || "").trim();
+  if (!raw || !password)
+    return res.status(400).json({ error: "Enter your phone number and password." });
+
+  const ph = msisdn(raw);
+  const r = ph
+    ? await pool.query("SELECT * FROM users WHERE phone=$1", [ph])
+    : await pool.query("SELECT * FROM users WHERE email=$1", [raw.toLowerCase()]);
+
   const u = r.rows[0];
-  if (!u || scrypt(password || "", u.salt) !== u.hash)
-    return res.status(401).json({ error: "Wrong email or password." });
+  if (!u || scrypt(password, u.salt) !== u.hash)
+    return res.status(401).json({ error: "Wrong phone number or password." });
   res.json({ token: sign({ id: u.id }), balance: Number(u.balance) });
 });
 
