@@ -202,20 +202,41 @@
 </div></div>
 
 <div class="sheet" id="authSheet"><div class="card">
-  <h2>Sign in</h2>
-  <label>Email</label><input id="email" type="email" autocomplete="email">
-  <label>Full name — as on your ID (new accounts)</label><input id="regName" autocomplete="name">
-  <label>National ID number (new accounts)</label><input id="regId" inputmode="numeric" maxlength="9">
-  <label>M-Pesa number (new accounts)</label><input id="regPhone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
-  <label>Password</label><input id="password" type="password" autocomplete="current-password">
-  <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
-    <input type="checkbox" id="over18" style="width:auto"> I confirm I am 18 or older
-  </label>
-  <div class="err" id="authErr"></div>
-  <div style="display:flex;gap:8px;margin-top:10px">
-    <button id="loginBtn">Log in</button>
-    <button class="ghost" id="registerBtn">Create account</button>
+
+  <!-- LOGIN: phone number + password only -->
+  <div id="loginPane">
+    <h2>Sign in</h2>
+    <label>M-Pesa number</label>
+    <input id="loginPhone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
+    <label>Password</label>
+    <input id="loginPassword" type="password" autocomplete="current-password">
+    <div class="err" id="authErr"></div>
+    <button id="loginBtn" style="width:100%;margin-top:10px">Log in</button>
+    <p style="text-align:center;font-size:13px;color:#e6c9c9;margin-top:14px">
+      New here?
+      <a href="#" id="toRegister" style="color:var(--gold);font-weight:600;text-decoration:none">Create an account</a>
+    </p>
   </div>
+
+  <!-- REGISTER: shown only when the player asks for it -->
+  <div id="registerPane" style="display:none">
+    <h2>Create account</h2>
+    <label>Full name — as on your ID</label><input id="regName" autocomplete="name">
+    <label>National ID number</label><input id="regId" inputmode="numeric" maxlength="9">
+    <label>M-Pesa number</label><input id="regPhone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
+    <label>Email</label><input id="regEmail" type="email" autocomplete="email">
+    <label>Password (8+ characters)</label><input id="regPassword" type="password" autocomplete="new-password">
+    <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
+      <input type="checkbox" id="over18" style="width:auto"> I confirm I am 18 or older
+    </label>
+    <div class="err" id="regErr"></div>
+    <button id="registerBtn" style="width:100%;margin-top:10px">Create account</button>
+    <p style="text-align:center;font-size:13px;color:#e6c9c9;margin-top:14px">
+      Already registered?
+      <a href="#" id="toLogin" style="color:var(--gold);font-weight:600;text-decoration:none">Sign in</a>
+    </p>
+  </div>
+
   <p class="rg">Play responsibly. Betting is for entertainment — never stake money you can't afford to lose.
   If gambling stops being fun, free help is available.</p>
 </div></div>
@@ -420,7 +441,7 @@ async function api(path, body){
   const d = await r.json().catch(()=>({}));
   if(r.status === 401 && token && path !== "login" && path !== "register"){
     token=null; localStorage.removeItem("fs_token");
-    close_("bootSheet"); open_("authSheet");
+    showPane("login"); close_("bootSheet"); open_("authSheet");
   }
   if(!r.ok) throw new Error(d.error||"Something went wrong.");
   return d;
@@ -632,7 +653,7 @@ function applyMode(live){
 async function boot(){
   // The login sheet stays hidden until we know whether the stored session is
   // still valid — otherwise it flashes on every load for signed-in players.
-  if(!token){ close_("bootSheet"); open_("authSheet"); return; }
+  if(!token){ showPane("login"); close_("bootSheet"); open_("authSheet"); return; }
   try{
     const me = await api("me");
     setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
@@ -640,26 +661,48 @@ async function boot(){
     $("hubMsg").textContent = "Place your bets";
   }catch(e){
     token=null; localStorage.removeItem("fs_token");
-    close_("bootSheet"); open_("authSheet");
+    showPane("login"); close_("bootSheet"); open_("authSheet");
   }
 }
+function showPane(which){
+  $("loginPane").style.display    = which === "login" ? "block" : "none";
+  $("registerPane").style.display = which === "login" ? "none"  : "block";
+  $("authErr").textContent = ""; $("regErr").textContent = "";
+}
+$("toRegister").onclick = e=>{ e.preventDefault(); showPane("register"); };
+$("toLogin").onclick    = e=>{ e.preventDefault(); showPane("login"); };
+
+async function enterGame(msg){
+  const me = await api("me");
+  setBalance(me.balance); showPaybill(me.id); applyMode(me.live); applyAccount(me);
+  close_("bootSheet"); close_("authSheet");
+  showPane("login");                       // next visit opens on sign-in
+  $("hubMsg").textContent = msg;
+  sfx.chip();
+}
+
 $("loginBtn").onclick = async ()=>{
-  try{ const d=await api("login",{email:$("email").value,password:$("password").value});
-    token=d.token; localStorage.setItem("fs_token",token); setBalance(d.balance);
-    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
-    close_("bootSheet"); close_("authSheet");
-    $("hubMsg").textContent="Place your bets"; sfx.chip();
-  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
+  const btn = $("loginBtn"); btn.disabled = true; btn.textContent = "Signing in\u2026";
+  try{
+    const d = await api("login",{ phone: $("loginPhone").value, password: $("loginPassword").value });
+    token = d.token; localStorage.setItem("fs_token", token); setBalance(d.balance);
+    await enterGame("Place your bets");
+  }catch(e){ $("authErr").textContent = e.message; sfx.error(); }
+  finally{ btn.disabled = false; btn.textContent = "Log in"; }
 };
+
 $("registerBtn").onclick = async ()=>{
-  try{ const d=await api("register",{email:$("email").value,password:$("password").value,
-      phone:$("regPhone").value,full_name:$("regName").value,id_number:$("regId").value,
-      over18:$("over18").checked});
-    token=d.token; localStorage.setItem("fs_token",token); setBalance(0);
-    const me=await api("me"); showPaybill(me.id); applyMode(me.live); applyAccount(me);
-    close_("bootSheet"); close_("authSheet");
-    $("hubMsg").textContent = me.live ? "Deposit to play" : "Place your bets"; sfx.chip();
-  }catch(e){ $("authErr").textContent=e.message; sfx.error(); }
+  const btn = $("registerBtn"); btn.disabled = true; btn.textContent = "Creating\u2026";
+  try{
+    const d = await api("register",{
+      email: $("regEmail").value, password: $("regPassword").value,
+      phone: $("regPhone").value, full_name: $("regName").value,
+      id_number: $("regId").value, over18: $("over18").checked });
+    token = d.token; localStorage.setItem("fs_token", token); setBalance(0);
+    // straight into the game — the registration form is never shown again
+    await enterGame(isLive ? "Deposit to play" : "Place your bets");
+  }catch(e){ $("regErr").textContent = e.message; sfx.error(); }
+  finally{ btn.disabled = false; btn.textContent = "Create account"; }
 };
 
 /* ---- deposit ---- */
@@ -857,6 +900,10 @@ document.addEventListener("visibilitychange",()=>{
     ? "Tap to stake · tap again to add more · press and hold to remove"
     : "Click to stake · click again to add more · right-click to remove";
 })();
+["loginPhone","loginPassword"].forEach(id=>{
+  const el = $(id);
+  if(el) el.addEventListener("keydown", e=>{ if(e.key === "Enter") $("loginBtn").click(); });
+});
 updateStakeTotal();
 boot(); refreshPool(); refreshWinners();
 setInterval(refreshPool, 15000); setInterval(refreshWinners, 20000);
