@@ -73,6 +73,8 @@ async function init() {
       `CREATE TABLE IF NOT EXISTS jackpot(id INT PRIMARY KEY DEFAULT 1, pool BIGINT DEFAULT 500000)`,
       `INSERT INTO jackpot(id) VALUES(1) ON CONFLICT DO NOTHING`,
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS demo_balance BIGINT DEFAULT 100000`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS winnings BIGINT DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS demo_winnings BIGINT DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT UNIQUE`,
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT`,
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS id_number TEXT UNIQUE`,
@@ -318,6 +320,7 @@ app.get("/api/me", auth, async (req, res) => {
     phone: req.user.phone, phone_verified: !!req.user.phone_verified,
     id_verified: !!req.user.id_verified,
     balance: st.live_mode ? req.user.balance : Number(req.user.demo_balance),
+    winnings: Number(st.live_mode ? req.user.winnings : req.user.demo_winnings) || 0,
     live: st.live_mode, withdrawals: st.withdrawals_enabled,
     wht: st.wht_enabled ? st.wht_rate : 0,
     wd_max: WD_MAX_MPESA, wd_daily: WD_DAILY_LIMIT });
@@ -514,6 +517,31 @@ async function sendTransfer({ name, phone, cents, ref }) {
   return { ok: true };
 }
 
+/* ---------- move winnings into playable credit ----------
+ * Winnings only become stakeable when the player asks for it, so a win is
+ * never quietly fed back into the next spin. */
+app.post("/api/move", auth, async (req, res) => {
+  const st = await getSettings();
+  const live = st.live_mode;
+  const balCol = live ? "balance" : "demo_balance";
+  const winCol = live ? "winnings" : "demo_winnings";
+  const held = Number(live ? req.user.winnings : req.user.demo_winnings) || 0;
+
+  // no amount given means move everything
+  const cents = req.body.amount == null ? held : Math.floor(Number(req.body.amount) * 100);
+  if (!(cents > 0)) return res.status(400).json({ error: "Nothing to move." });
+  if (cents > held) return res.status(400).json({ error: "You don't have that much in winnings." });
+
+  const r = await pool.query(
+    `UPDATE users SET ${winCol}=${winCol}-$2, ${balCol}=${balCol}+$2
+     WHERE id=$1 AND ${winCol}>=$2 RETURNING ${balCol} AS b, ${winCol} AS w`,
+    [req.user.id, cents]);
+  if (!r.rowCount) return res.status(400).json({ error: "You don't have that much in winnings." });
+
+  res.json({ ok: true, balance: Number(r.rows[0].b), winnings: Number(r.rows[0].w),
+             message: "Moved to credit — ready to stake." });
+});
+
 /* ---------- withdrawals ---------- */
 async function withdrawalsToday(userId) {
   const start = new Date(); start.setHours(0, 0, 0, 0);
@@ -546,10 +574,17 @@ app.post("/api/withdraw", auth, async (req, res) => {
     return res.status(403).json({ error: "Verify your account with one deposit before withdrawing." });
   if (await withdrawalsToday(req.user.id) >= WD_DAILY_LIMIT)
     return res.status(429).json({ error: `Daily limit reached (${WD_DAILY_LIMIT} withdrawals). Try again tomorrow.` });
-  if (cents > req.user.balance) return res.status(400).json({ error: "Insufficient balance." });
+  const held = Number(req.user.winnings) || 0;
+  const available = held + req.user.balance;
+  if (cents > available) return res.status(400).json({ error: "Insufficient balance." });
 
+  // take from winnings first, then from playable credit
+  const fromWin = Math.min(held, cents);
+  const fromBal = cents - fromWin;
   const deb = await pool.query(
-    "UPDATE users SET balance=balance-$2 WHERE id=$1 AND balance>=$2", [req.user.id, cents]);
+    `UPDATE users SET winnings=winnings-$2, balance=balance-$3
+     WHERE id=$1 AND winnings>=$2 AND balance>=$3`,
+    [req.user.id, fromWin, fromBal]);
   if (!deb.rowCount) return res.status(400).json({ error: "Insufficient balance." });
   const ref = "wd_" + crypto.randomBytes(10).toString("hex");
   await pool.query(
@@ -559,12 +594,13 @@ app.post("/api/withdraw", auth, async (req, res) => {
   const out = await sendTransfer({ name: req.user.full_name, phone: phone, cents: cents, ref: ref });
   if (!out.ok) {
     await pool.query("UPDATE tx SET status='failed' WHERE ref=$1", [ref]);
-    await pool.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [req.user.id, cents]);
+    await pool.query("UPDATE users SET winnings=winnings+$2, balance=balance+$3 WHERE id=$1",
+      [fromWin, fromBal, req.user.id]);
     return res.status(502).json({ error: out.error + " Your balance was not charged." });
   }
   await pool.query("UPDATE tx SET status='pending' WHERE ref=$1", [ref]);
-  const u = await pool.query("SELECT balance FROM users WHERE id=$1", [req.user.id]);
-  res.json({ ok: true, balance: Number(u.rows[0].balance),
+  const u = await pool.query("SELECT balance, winnings FROM users WHERE id=$1", [req.user.id]);
+  res.json({ ok: true, balance: Number(u.rows[0].balance), winnings: Number(u.rows[0].winnings),
              message: "Sent — you'll get the M-Pesa SMS shortly." });
 });
 
@@ -589,18 +625,24 @@ app.post("/api/withdraw/pesalink", auth, async (req, res) => {
     return res.status(403).json({ error: "Large withdrawals need ID verification. Contact support to verify your ID." });
   if (await withdrawalsToday(req.user.id) >= WD_DAILY_LIMIT)
     return res.status(429).json({ error: `Daily limit reached (${WD_DAILY_LIMIT} withdrawals). Try again tomorrow.` });
-  if (cents > req.user.balance) return res.status(400).json({ error: "Insufficient balance." });
+  const plHeld = Number(req.user.winnings) || 0;
+  if (cents > plHeld + req.user.balance) return res.status(400).json({ error: "Insufficient balance." });
 
+  // winnings first, then playable credit
+  const plFromWin = Math.min(plHeld, cents);
+  const plFromBal = cents - plFromWin;
   const deb = await pool.query(
-    "UPDATE users SET balance=balance-$2 WHERE id=$1 AND balance>=$2", [req.user.id, cents]);
+    `UPDATE users SET winnings=winnings-$2, balance=balance-$3
+     WHERE id=$1 AND winnings>=$2 AND balance>=$3`,
+    [req.user.id, plFromWin, plFromBal]);
   if (!deb.rowCount) return res.status(400).json({ error: "Insufficient balance." });
   const ref = "pl_" + crypto.randomBytes(10).toString("hex");
   await pool.query(
     `INSERT INTO tx(user_id,kind,amount,ref,status,phone,bank,account,created)
      VALUES($1,'pesalink',$2,$3,'requested',$4,$5,$6,$7)`,
     [req.user.id, cents, ref, req.user.phone, bank, account, Date.now()]);
-  const u = await pool.query("SELECT balance FROM users WHERE id=$1", [req.user.id]);
-  res.json({ ok: true, balance: Number(u.rows[0].balance),
+  const u = await pool.query("SELECT balance, winnings FROM users WHERE id=$1", [req.user.id]);
+  res.json({ ok: true, balance: Number(u.rows[0].balance), winnings: Number(u.rows[0].winnings),
     message: "PesaLink request received. Bank transfers are processed within one business day." });
 });
 
@@ -645,9 +687,14 @@ async function settle(user, bets, stake, live, st, freeSpin) {
     const t = live ? applyWHT(gross, chargeStake, st) : { net: gross, tax: 0 };
     netPayout = t.net; taxTaken = t.tax;
 
+    // Stakes come out of playable credit; winnings are parked in a separate
+    // pot so they are never silently staked again. The player moves them
+    // across deliberately, or withdraws them.
     const balCol = live ? "balance" : "demo_balance";
+    const winCol = live ? "winnings" : "demo_winnings";
     const d = await client.query(
-      `UPDATE users SET ${balCol}=${balCol}-$2+$3 WHERE id=$1 AND ${balCol}>=$2`,
+      `UPDATE users SET ${balCol}=${balCol}-$2, ${winCol}=${winCol}+$3
+       WHERE id=$1 AND ${balCol}>=$2`,
       [user.id, chargeStake, netPayout]);
     if (!d.rowCount) throw new Error("balance");
     await client.query(
@@ -705,7 +752,9 @@ app.post("/api/spin", auth, async (req, res) => {
   }
 
   const balCol = live ? "balance" : "demo_balance";
-  const u = await pool.query(`SELECT ${balCol} AS b FROM users WHERE id=$1`, [req.user.id]);
+  const winCol = live ? "winnings" : "demo_winnings";
+  const u = await pool.query(
+    `SELECT ${balCol} AS b, ${winCol} AS w FROM users WHERE id=$1`, [req.user.id]);
   const jp = await pool.query("SELECT pool FROM jackpot WHERE id=1");
   res.json({
     key: out.key, slot: out.slot, payout: out.payout, tax: out.tax, jackpot: out.jackpot,
@@ -715,7 +764,8 @@ app.post("/api/spin", auth, async (req, res) => {
       tax: respinResult.tax, jackpot: respinResult.jackpot,
       bonus: respinResult.bonusToken ? { token: respinResult.bonusToken } : null,
     } : null,
-    pool: Number(jp.rows[0].pool), balance: Number(u.rows[0].b), live,
+    pool: Number(jp.rows[0].pool), balance: Number(u.rows[0].b),
+    winnings: Number(u.rows[0].w), live,
   });
 });
 
@@ -731,6 +781,7 @@ app.post("/api/bonus/pick", auth, async (req, res) => {
   const st = await getSettings();
   const gross = picks.reduce((s, i) => s + t.tiles[i] * t.stake, 0);
   const taxed = t.live ? applyWHT(gross, 0, st) : { net: gross, tax: 0 };
+  const winCol = t.live ? "winnings" : "demo_winnings";
   const balCol = t.live ? "balance" : "demo_balance";
 
   const client = await pool.connect();
@@ -742,7 +793,7 @@ app.post("/api/bonus/pick", auth, async (req, res) => {
        VALUES($1,'bonus',$2,$3,'success',$4) ON CONFLICT (ref) DO NOTHING`,
       [req.user.id, taxed.net, "bonus_" + t.n, Date.now()]);
     if (!ins.rowCount) throw new Error("dup");
-    await client.query(`UPDATE users SET ${balCol}=${balCol}+$2 WHERE id=$1`, [req.user.id, taxed.net]);
+    await client.query(`UPDATE users SET ${winCol}=${winCol}+$2 WHERE id=$1`, [req.user.id, taxed.net]);
     await client.query(
       `INSERT INTO spins(user_id,bets,slot,stake,payout,demo,jackpot,tax,kind,created)
        VALUES($1,'{}',0,0,$2,$3,0,$4,'bonus',$5)`,
@@ -753,10 +804,12 @@ app.post("/api/bonus/pick", auth, async (req, res) => {
     return res.status(400).json({ error: "This bonus was already claimed." });
   }
   client.release();
-  const u = await pool.query(`SELECT ${balCol} AS b FROM users WHERE id=$1`, [req.user.id]);
+  const u = await pool.query(
+    `SELECT ${balCol} AS b, ${winCol} AS w FROM users WHERE id=$1`, [req.user.id]);
   res.json({
     revealed: picks.map(i => ({ i: i, mult: t.tiles[i] })),
-    all: t.tiles, payout: taxed.net, tax: taxed.tax, balance: Number(u.rows[0].b),
+    all: t.tiles, payout: taxed.net, tax: taxed.tax,
+    balance: Number(u.rows[0].b), winnings: Number(u.rows[0].w),
   });
 });
 
