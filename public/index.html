@@ -96,6 +96,37 @@
   .slot.lit-purple{box-shadow:0 0 0 3px #d18aff, 0 0 24px 7px #8e24aa;filter:brightness(1.35)}
   .slot.lit-green{box-shadow:0 0 0 3px #7bffa8, 0 0 22px 6px #14a44d;filter:brightness(1.3)}
 
+  /* RESULT MARKER — where the wheel stopped keeps its colour after the lights
+     stop, so the player can see the landing for as long as they want. Green if
+     they had money on it, red if they didn't. Cleared on the next pick. */
+  .slot.landed-win{border-color:#7bffa8;filter:brightness(1.35);
+    box-shadow:0 0 0 3px #7bffa8, 0 0 26px 8px rgba(20,164,77,.85)}
+  .slot.landed-miss{border-color:#ff9c93;filter:brightness(1.15);
+    box-shadow:0 0 0 3px #ff6b5e, 0 0 20px 6px rgba(217,44,32,.7)}
+  .slot.landed-win::after,.slot.landed-miss::after{content:"";position:absolute;inset:0;
+    pointer-events:none;animation:landedPulse 1.2s ease-in-out infinite}
+  .slot.landed-win::after{box-shadow:inset 0 0 14px 4px rgba(123,255,168,.8)}
+  .slot.landed-miss::after{box-shadow:inset 0 0 14px 4px rgba(255,107,94,.65)}
+  @keyframes landedPulse{0%,100%{opacity:.2}50%{opacity:1}}
+
+  /* ...and the matching bet tile is marked too, so "I picked it and it hit"
+     is obvious even after the stake tiles reset for the next round. */
+  .bet.hit{border-color:#7bffa8;
+    background:linear-gradient(160deg,#0c3a20,#06190e);
+    box-shadow:0 0 0 2px rgba(123,255,168,.4), 0 0 16px 3px rgba(20,164,77,.55)}
+  .bet.hit .dot{box-shadow:0 0 0 2px #7bffa8}
+  .bet.land{border-color:#ff9c93;
+    background:linear-gradient(160deg,#3a1210,#1a0706)}
+  .bet .res{position:absolute;left:0;right:0;bottom:0;padding:1px 0;
+    font-family:'Russo One';font-size:clamp(7px,2.1vw,9px);display:none;
+    letter-spacing:.4px}
+  .bet.hit .res{display:block;background:#7bffa8;color:#042611}
+  .bet.land .res{display:block;background:#ff6b5e;color:#2a0603}
+  /* a stake tile that is active again must not keep the old result colours */
+  .bet.active.hit,.bet.active.land{
+    background:linear-gradient(160deg,#4a3708,#241703);border-color:var(--gold)}
+  .bet.active .res{display:none}
+
   /* bet panel — compact 4-across, square tiles */
   .bets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;
         padding:0 12px;margin-top:6px}
@@ -461,6 +492,44 @@ function lightsWinner(slot){                    // WIN: only the winning slot pu
   }, 220);
 }
 
+/* ---------- RESULT MARKER ----------
+   The chase lights go out between rounds, but the player should still be able
+   to see where the wheel stopped — and whether that symbol was one of theirs.
+   So the landed slot and its bet tile keep a colour until the next pick. */
+function clearLanded(){
+  slots.forEach(s=> s.classList.remove("landed-win","landed-miss"));
+  BETTABLE.forEach(k=>{
+    const el = $("bet-"+k);
+    if(el) el.classList.remove("hit","land");
+    const r = $("res-"+k); if(r) r.textContent = "";
+  });
+}
+/* `paid` is what the spin actually returned. The slot colour follows the money,
+   not the symbol: ALL PRIZE and the diamond slots pay without being bettable,
+   so judging by the stake alone would paint a winning spin red. */
+function markLanded(slot, staked, paid){
+  clearLanded();
+  const el = slots[slot]; if(!el) return;
+  const key = WHEEL[slot];
+  const bet = staked || {};
+  el.classList.add(paid > 0 ? "landed-win" : "landed-miss");
+
+  if(key === "allprize" && paid > 0){
+    // ALL PRIZE pays every stake on the board — light all of them.
+    Object.keys(bet).forEach(k=>{
+      const t = $("bet-"+k), r = $("res-"+k);
+      if(t && r){ t.classList.add("hit"); r.textContent = "ALL PRIZE ✓"; }
+    });
+    return;
+  }
+  const tile = $("bet-"+key), res = $("res-"+key);
+  if(tile && res){
+    const mine = !!bet[key] && paid > 0;
+    tile.classList.add(mine ? "hit" : "land");
+    res.textContent = mine ? "YOUR PICK ✓" : "LANDED";
+  }
+}
+
 /* ---------- API ---------- */
 async function api(path, body){
   const r = await fetch("/api/"+path,{
@@ -523,7 +592,8 @@ BOARD.forEach(key=>{
     '<div class="dot" style="background:'+t.c+'">'+t.n+'</div>' +
     '<small>'+(t.star ? "\u2605 STAR" : (t.big ? "BIG 5" : "PAYS"))+'</small>' +
     '<b>'+t.odds+'\u00D7</b>' +
-    '<div class="amt" id="amt-'+key+'"></div>';
+    '<div class="amt" id="amt-'+key+'"></div>' +
+    '<div class="res" id="res-'+key+'"></div>';
 
   if(t.star){
     el.style.borderColor = "#7a6420";
@@ -534,6 +604,7 @@ BOARD.forEach(key=>{
 
   el.onclick = ()=>{
     if(spinning) return;
+    clearLanded();                 // picking again puts out the last result
     bets[key] = (bets[key]||0) + chip*100;
     stakeTaps[key] = (stakeTaps[key]||0) + 1;
     el.classList.add("active");
@@ -926,6 +997,8 @@ async function showOutcome(d,isRespin){
     $("hubMsg").textContent = isRespin ? "Free spin — no win" : "No win";
     sfx.lose();
   }
+  // leave the landing colour-coded until the player picks again
+  markLanded(d.slot, lastBets, Number(d.payout || 0) + Number(d.jackpot || 0));
 }
 
 /* ---- spin with light chase ---- */
@@ -934,6 +1007,7 @@ $("spinBtn").onclick = async ()=>{
   if(!Object.keys(bets).length){ $("hubMsg").textContent="Tap a symbol to bet first"; sfx.error(); return; }
   ac(); // unlock audio on user gesture (browsers block autoplay before this)
   spinning=true; $("spinBtn").disabled=true; $("hubMsg").textContent="";
+  clearLanded();                            // last round's marker goes out
   $("bets").style.opacity=".55"; $("bets").style.pointerEvents="none";
   sfx.spin();
   lastBets = Object.assign({}, bets);     // kept for the result message
