@@ -85,6 +85,8 @@ async function init() {
       `ALTER TABLE tx ADD COLUMN IF NOT EXISTS bank TEXT`,
       `ALTER TABLE tx ADD COLUMN IF NOT EXISTS account TEXT`,
       `ALTER TABLE tx ADD COLUMN IF NOT EXISTS alt BOOLEAN DEFAULT false`,
+      `ALTER TABLE tx ADD COLUMN IF NOT EXISTS from_win BIGINT DEFAULT 0`,
+      `ALTER TABLE tx ADD COLUMN IF NOT EXISTS from_bal BIGINT DEFAULT 0`,
     ];
     for (const sql of statements) await pool.query(sql);
   })().catch((e) => { ready = null; throw e; });
@@ -453,6 +455,37 @@ app.post("/api/mpesa/c2b/confirm/:token", async (req, res) => {
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
+/* ---------- refund a withdrawal, restoring the exact pots it came from ------
+ * A payout can be funded partly from winnings and partly from playable credit.
+ * Returning the whole amount to winnings leaves the player whole in total but
+ * silently converts their credit into winnings, so the split is recorded on
+ * the tx row and replayed here. Rows written before that column existed fall
+ * back to winnings, which matches how they were taken.
+ * Returns true only if THIS call performed the refund (never double-credits). */
+async function refundWithdrawal(t) {
+  const amount = Number(t.amount);
+  let fw = Number(t.from_win || 0), fb = Number(t.from_bal || 0);
+  if (fw + fb !== amount) { fw = amount; fb = 0; }   // legacy or inconsistent row
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const upd = await client.query(
+      "UPDATE tx SET status='failed' WHERE id=$1 AND status IN ('pending','sending','review')",
+      [t.id]);
+    if (!upd.rowCount) { await client.query("ROLLBACK"); client.release(); return false; }
+    await client.query(
+      "UPDATE users SET winnings=winnings+$2, balance=balance+$3 WHERE id=$1",
+      [t.user_id, fw, fb]);
+    await client.query("COMMIT");
+  } catch (e) {
+    try { await client.query("ROLLBACK"); } catch (e2) {}
+    client.release();
+    return false;
+  }
+  client.release();
+  return true;
+}
+
 /* ---------- B2C payout helper (also used by the admin payout queue) ----------
  * Sends money from your paybill straight to the player's M-Pesa. Returns
  * {ok:true} or {ok:false,error}; it never touches balances — the caller has
@@ -510,17 +543,8 @@ app.post("/api/mpesa/b2c/:token", async (req, res) => {
       if (rslt.ResultCode === 0) {
         await pool.query("UPDATE tx SET status='success' WHERE id=$1", [t.id]);
       } else {
-        // failed or timed out — return the money to the player's winnings
-        const client = await pool.connect();
-        try {
-          await client.query("BEGIN");
-          const upd = await client.query(
-            "UPDATE tx SET status='failed' WHERE id=$1 AND status IN ('pending','sending')", [t.id]);
-          if (upd.rowCount)                       // refund exactly once
-            await client.query("UPDATE users SET winnings=winnings+$2 WHERE id=$1",
-              [t.user_id, Number(t.amount)]);
-          await client.query("COMMIT");
-        } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
+        // failed or timed out — put the money back in the pots it came from
+        await refundWithdrawal(t);
       }
     }
   }
@@ -615,8 +639,9 @@ app.post("/api/withdraw", auth, async (req, res) => {
       "UPDATE users SET winnings=winnings-$2, balance=balance-$3 WHERE id=$1",
       [req.user.id, fromWin, fromBal]);
     await lockClient.query(
-      "INSERT INTO tx(user_id,kind,amount,ref,status,phone,created) VALUES($1,'withdraw',$2,$3,'sending',$4,$5)",
-      [req.user.id, cents, ref, phone, Date.now()]);
+      `INSERT INTO tx(user_id,kind,amount,ref,status,phone,from_win,from_bal,created)
+       VALUES($1,'withdraw',$2,$3,'sending',$4,$5,$6,$7)`,
+      [req.user.id, cents, ref, phone, fromWin, fromBal, Date.now()]);
     await lockClient.query("COMMIT");
   } catch (e) {
     try { await lockClient.query("ROLLBACK"); } catch (e2) {}
@@ -627,9 +652,8 @@ app.post("/api/withdraw", auth, async (req, res) => {
 
   const out = await sendTransfer({ name: req.user.full_name, phone: phone, cents: cents, ref: ref });
   if (!out.ok) {
-    await pool.query("UPDATE tx SET status='failed' WHERE ref=$1", [ref]);
-    await pool.query("UPDATE users SET winnings=winnings+$2, balance=balance+$3 WHERE id=$1",
-      [req.user.id, fromWin, fromBal]);
+    const row = (await pool.query("SELECT * FROM tx WHERE ref=$1", [ref])).rows[0];
+    if (row) await refundWithdrawal(row);
     return res.status(502).json({ error: out.error + " Your balance was not charged." });
   }
   await pool.query("UPDATE tx SET status='pending' WHERE ref=$1", [ref]);
@@ -672,9 +696,9 @@ app.post("/api/withdraw/pesalink", auth, async (req, res) => {
   if (!deb.rowCount) return res.status(400).json({ error: "Insufficient balance." });
   const ref = "pl_" + crypto.randomBytes(10).toString("hex");
   await pool.query(
-    `INSERT INTO tx(user_id,kind,amount,ref,status,phone,bank,account,created)
-     VALUES($1,'pesalink',$2,$3,'requested',$4,$5,$6,$7)`,
-    [req.user.id, cents, ref, req.user.phone, bank, account, Date.now()]);
+    `INSERT INTO tx(user_id,kind,amount,ref,status,phone,bank,account,from_win,from_bal,created)
+     VALUES($1,'pesalink',$2,$3,'requested',$4,$5,$6,$7,$8,$9)`,
+    [req.user.id, cents, ref, req.user.phone, bank, account, plFromWin, plFromBal, Date.now()]);
   const u = await pool.query("SELECT balance, winnings FROM users WHERE id=$1", [req.user.id]);
   res.json({ ok: true, balance: Number(u.rows[0].balance), winnings: Number(u.rows[0].winnings),
     message: "PesaLink request received. Bank transfers are processed within one business day." });
@@ -868,7 +892,8 @@ app.get("/api/jackpot", async (_req, res) => {
   res.json({ pool: Number(r.rows[0]?.pool || 0) });
 });
 
-require("./admin.js")(app, pool, sign, verify, { sendTransfer: sendTransfer });
+require("./admin.js")(app, pool, sign, verify,
+  { sendTransfer: sendTransfer, refundWithdrawal: refundWithdrawal });
 
 /* Where each payout stands, for the player's own screen. */
 app.get("/api/withdrawals", auth, async (req, res) => {

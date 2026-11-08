@@ -409,17 +409,10 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
     }
 
     if (action === "refund") {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const upd = await client.query(
-          "UPDATE tx SET status='failed' WHERE id=$1 AND status<>'failed'", [t.id]);
-        if (upd.rowCount)
-          await client.query("UPDATE users SET winnings=winnings+$2 WHERE id=$1",
-            [t.user_id, Number(t.amount)]);
-        await client.query("COMMIT");
-      } catch (e) { await client.query("ROLLBACK"); throw e; }
-      finally { client.release(); }
+      const done = payouts && payouts.refundWithdrawal
+        ? await payouts.refundWithdrawal(t)
+        : false;
+      if (!done) return res.status(400).json({ error: "Already settled — nothing to refund." });
       return res.json({ ok: true, message: "Refunded to the player." });
     }
 
