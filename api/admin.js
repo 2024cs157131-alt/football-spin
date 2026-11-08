@@ -394,7 +394,7 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
 
   /* Manual settlement. "paid" is for money you sent by hand (or that Safaricom
    * delivered without a callback reaching us); "refund" returns it to the
-   * player; "retry" sends the Paystack transfer again. */
+   * player; "retry" sends the M-Pesa B2C payout again. */
   app.post(`${P}/payouts/:ref`, adminAuth, wrap(async (req, res) => {
     const action = String(req.body.action || "");
     const t = (await pool.query(
@@ -640,7 +640,7 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   <p style="color:#7d8590;font-size:12px">Withholding tax is deducted from the player's winnings and remitted to KRA — it is not your revenue. Rates change; confirm current figures with your accountant. Turning WHT off while the law requires it is tax evasion.</p>
 
   <h2>Payouts — pending &amp; manual settlement</h2>
-  <p style="color:#7d8590;font-size:12px">"Pending" means the transfer was sent but Paystack has not confirmed delivery yet. Mark paid if you settled it by hand, retry to send again, or refund to return the money to the player.</p>
+  <p style="color:#7d8590;font-size:12px">"Pending" means the B2C payout was accepted by M-Pesa but Safaricom has not confirmed delivery yet. Mark paid if you settled it by hand, retry to send again, or refund to return the money to the player. A payout that fails for an empty B2C balance can simply be retried once the paybill is topped up.</p>
   <div class="scroll"><table id="payouts" class="resp"><thead><tr>
     <th>Ref</th><th>Player</th><th>Phone</th><th>Amount</th><th>Status</th><th>When</th><th></th>
   </tr></thead><tbody></tbody></table></div>

@@ -2,12 +2,13 @@
  * Safari Spin — Postgres backend for Vercel
  *
  * DEPOSITS   : your own M-Pesa paybill via Daraja (STK push + direct C2B).
- * WITHDRAWALS: Paystack Transfers to the player's registered M-Pesa number.
+ * WITHDRAWALS: Daraja B2C from the same paybill to the player's registered
+ *              M-Pesa number. No third-party payment processor is involved.
  *
  * Env: DATABASE_URL, APP_SECRET, BASE_URL, CALLBACK_TOKEN,
  *      MPESA_ENV, MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET,
  *      MPESA_SHORTCODE, MPESA_PASSKEY,
- *      PAYSTACK_SECRET (sk_test_... then sk_live_...),
+ *      MPESA_INITIATOR, MPESA_SECURITY_CREDENTIAL (B2C payouts),
  *      ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET
  */
 const express = require("express");
@@ -15,20 +16,15 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 
 const {
-  DATABASE_URL, APP_SECRET, BASE_URL, PAYSTACK_SECRET, CALLBACK_TOKEN,
+  DATABASE_URL, APP_SECRET, BASE_URL, CALLBACK_TOKEN,
   MPESA_ENV = "sandbox", MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET,
   MPESA_SHORTCODE, MPESA_PASSKEY,
+  MPESA_INITIATOR, MPESA_SECURITY_CREDENTIAL,
 } = process.env;
 
 const DARAJA = MPESA_ENV === "production"
   ? "https://api.safaricom.co.ke"
   : "https://sandbox.safaricom.co.ke";
-
-const PS = "https://api.paystack.co";
-const psHeaders = {
-  Authorization: `Bearer ${PAYSTACK_SECRET}`,
-  "Content-Type": "application/json",
-};
 
 /* Neon presents a certificate from a public CA, so the connection is fully
  * verified. Put `sslmode=verify-full` in DATABASE_URL to match — `require`
@@ -96,8 +92,6 @@ async function init() {
 }
 
 const app = express();
-// Paystack signs the raw body — this route must see it unparsed
-app.use("/api/paystack/webhook", express.raw({ type: "*/*" }));
 app.use(express.json());
 app.use(async (_req, res, next) => {
   try { await init(); next(); }
@@ -459,71 +453,79 @@ app.post("/api/mpesa/c2b/confirm/:token", async (req, res) => {
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
-/* ---------- Paystack webhook: withdrawal (transfer) results only ---------- */
-app.post("/api/paystack/webhook", async (req, res) => {
-  const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
-  const expected = crypto.createHmac("sha512", PAYSTACK_SECRET || "").update(raw).digest("hex");
-  const got = String(req.headers["x-paystack-signature"] || "");
-  let ok = false;
-  try { ok = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got)); } catch (e) { ok = false; }
-  if (!ok) return res.sendStatus(401);
-
-  let ev; try { ev = JSON.parse(raw.toString()); } catch (e) { return res.sendStatus(400); }
-  const d = ev.data || {};
-
-  if (ev.event === "transfer.success")
-    await pool.query("UPDATE tx SET status='success' WHERE ref=$1 AND kind='withdraw'", [d.reference]);
-
-  if (ev.event === "transfer.failed" || ev.event === "transfer.reversed") {
-    const t = (await pool.query(
-      "SELECT * FROM tx WHERE ref=$1 AND kind='withdraw' AND status IN ('pending','sending')",
-      [d.reference])).rows[0];
-    if (t) {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const upd = await client.query(
-          "UPDATE tx SET status='failed' WHERE id=$1 AND status IN ('pending','sending')", [t.id]);
-        if (upd.rowCount)                          // refund exactly once
-          await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1",
-            [t.user_id, Number(t.amount)]);
-        await client.query("COMMIT");
-      } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
-    }
-  }
-  res.sendStatus(200);
-});
-
-/* ---------- Paystack payout helper (also used by admin approvals) ----------
- * Returns {ok:true} or {ok:false,error}. Never touches balances — the caller
- * has already debited and is responsible for refunding on failure. */
+/* ---------- B2C payout helper (also used by the admin payout queue) ----------
+ * Sends money from your paybill straight to the player's M-Pesa. Returns
+ * {ok:true} or {ok:false,error}; it never touches balances — the caller has
+ * already debited and is responsible for refunding on failure. */
 async function sendTransfer({ name, phone, cents, ref }) {
-  let rcp;
-  try {
-    rcp = await fetch(`${PS}/transferrecipient`, {
-      method: "POST", headers: psHeaders,
-      body: JSON.stringify({ type: "mobile_money", name: name || "Player",
-        account_number: phone, bank_code: "MPESA", currency: "KES" }),
-    }).then(x => x.json());
-  } catch (e) { return { ok: false, error: "Could not reach Paystack." }; }
-  if (!rcp || !rcp.status || !rcp.data)
-    return { ok: false, error: (rcp && rcp.message) || "Could not register that M-Pesa number." };
+  const amountKes = Math.round(Number(cents) / 100);
+  if (!(amountKes > 0)) return { ok: false, error: "Invalid payout amount." };
+  if (!MPESA_INITIATOR || !MPESA_SECURITY_CREDENTIAL)
+    return { ok: false, error: "B2C is not configured: set MPESA_INITIATOR and MPESA_SECURITY_CREDENTIAL." };
 
-  let tr;
-  try {
-    tr = await fetch(`${PS}/transfer`, {
-      method: "POST", headers: psHeaders,
-      body: JSON.stringify({ source: "balance", amount: cents,
-        recipient: rcp.data.recipient_code, reference: ref, currency: "KES",
-        reason: "Winnings withdrawal" }),
-    }).then(x => x.json());
-  } catch (e) { return { ok: false, error: "Could not reach Paystack." }; }
+  let token;
+  try { token = await darajaToken(); }
+  catch (e) { return { ok: false, error: "Could not reach M-Pesa. Try again." }; }
 
-  if (!tr || !tr.status) return { ok: false, error: (tr && tr.message) || "Payout failed." };
-  if (tr.data && tr.data.status === "otp")
-    return { ok: false, error: "Payouts need OTP approval. Disable transfer OTP in your Paystack dashboard." };
+  let r;
+  try {
+    r = await fetch(`${DARAJA}/mpesa/b2c/v3/paymentrequest`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        OriginatorConversationID: ref,
+        InitiatorName: MPESA_INITIATOR,
+        SecurityCredential: MPESA_SECURITY_CREDENTIAL,
+        CommandID: "BusinessPayment",
+        Amount: amountKes,
+        PartyA: MPESA_SHORTCODE,
+        PartyB: phone,
+        Remarks: "Winnings withdrawal",
+        Occasion: "Withdrawal",
+        QueueTimeOutURL: `${BASE_URL}/api/mpesa/b2c/${CALLBACK_TOKEN}`,
+        ResultURL: `${BASE_URL}/api/mpesa/b2c/${CALLBACK_TOKEN}`,
+      }),
+    }).then(x => x.json());
+  } catch (e) { return { ok: false, error: "Could not reach M-Pesa. Try again." }; }
+
+  if (!r || r.ResponseCode !== "0") {
+    const msg = (r && (r.errorMessage || r.ResponseDescription)) || "Payout failed.";
+    // the usual production cause: the paybill's B2C/utility balance is empty
+    return { ok: false, error: msg };
+  }
   return { ok: true };
 }
+
+/* ---------- Daraja B2C result / timeout callback ----------
+ * Safaricom confirms delivery here. Until it arrives the payout stays
+ * "pending" for the player and in the admin payout queue. */
+app.post("/api/mpesa/b2c/:token", async (req, res) => {
+  if (req.params.token !== CALLBACK_TOKEN) return res.sendStatus(403);
+  const rslt = req.body && req.body.Result;
+  if (rslt) {
+    const ref = rslt.OriginatorConversationID;
+    const t = (await pool.query(
+      "SELECT * FROM tx WHERE ref=$1 AND kind='withdraw'", [ref])).rows[0];
+    if (t && (t.status === "pending" || t.status === "sending")) {
+      if (rslt.ResultCode === 0) {
+        await pool.query("UPDATE tx SET status='success' WHERE id=$1", [t.id]);
+      } else {
+        // failed or timed out — return the money to the player's winnings
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const upd = await client.query(
+            "UPDATE tx SET status='failed' WHERE id=$1 AND status IN ('pending','sending')", [t.id]);
+          if (upd.rowCount)                       // refund exactly once
+            await client.query("UPDATE users SET winnings=winnings+$2 WHERE id=$1",
+              [t.user_id, Number(t.amount)]);
+          await client.query("COMMIT");
+        } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
+      }
+    }
+  }
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+});
 
 /* ---------- move winnings into playable credit ----------
  * Winnings only become stakeable when the player asks for it, so a win is
