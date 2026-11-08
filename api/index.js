@@ -170,7 +170,8 @@ async function darajaToken() {
  * real odds live in the weighted OUTCOMES table.
  *
  * Player return 32% (68% gross margin) on EVERY bet type:
- *   direct animal/all-prize wins + 2% jackpot + ~4% bonus pick-3 + free respins.
+ *   direct animal/all-prize wins + 2% jackpot + the diamond's extra landings
+ *   + free respins.
  * 68% gross is roughly 30% net after excise 15% of stakes, betting tax 15% of
  * GGR and corporate tax 30% — plug live rates into the admin tax calculator.
  */
@@ -219,19 +220,40 @@ const BASE = [
   { key: "zebra",    odds: 5,   w: 4536,  scale: true },
   { key: "allprize", odds: 2,   w: 1500,  scale: true },
   { key: "jackpot",  odds: 0,   w: 5 },      // ~1 in 20,000
-  { key: "bonus",    odds: 0,   w: 462 },    // DIAMOND BONUS: pick 3 of 9
+  { key: "bonus",    odds: 0,   w: 900 },    // DIAMOND: 2-3 extra landings
   { key: "respin",   odds: 0,   w: 1000 },   // DIAMOND RESPIN: one free spin
 ];
 const POOL_W = 100000;
+const BONUS_W = 900;          // must match the `bonus` row in BASE above
 const JACKPOT_CUT = 0.02;
 const JACKPOT_SEED = 5000 * 100;
-const BASE_DIRECT = 0.2568;   // direct RTP of the scaled block at k = 1
-const BONUS_EV = 8.6667;      // average bonus payout, x total stake
+/* Every symbol in BASE is tuned to the same odds x weight product, so a
+ * player's direct return is the same however they split their stake. Deriving
+ * these from the table instead of hardcoding them keeps that true if the table
+ * is ever retuned. */
+const SCALABLE_W = BASE.filter(o => o.scale).reduce((s, o) => s + o.w, 0);
+/* A zebra-only bettor's return per unit staked, in weight units: the zebra
+ * line plus all-prize, which pays on the whole board. */
+const DIRECT_UNITS = BASE.filter(o => o.key === "zebra" || o.key === "allprize")
+                         .reduce((s, o) => s + o.odds * o.w, 0);
+const BASE_DIRECT = DIRECT_UNITS / POOL_W;   // direct RTP of the scaled block at k = 1
+
+/* DIAMOND (the blue slot): instead of an overlay, the wheel lands 2-3 more
+ * times on real symbols and pays whichever of those the player backed. Each
+ * extra landing is drawn from the symbol block alone, so its expected return
+ * is DIRECT_UNITS / SCALABLE_W per unit staked - a constant that does not
+ * depend on k and does not depend on how the player split their bets. That is
+ * what keeps every bet type at an identical RTP. */
+const EXTRA_MIN = 2, EXTRA_MAX = 3;
+const EXTRA_EV_EACH = DIRECT_UNITS / SCALABLE_W;
+const BONUS_EV = EXTRA_EV_EACH * (EXTRA_MIN + EXTRA_MAX) / 2;
+const SYMBOL_KEYS = new Set(
+  ["star", "elephant", "rhino", "lion", "buffalo", "leopard", "giraffe", "zebra", "allprize"]);
 
 function buildOutcomes(targetRtpPct) {
   const R = Math.min(90, Math.max(8, Number(targetRtpPct) || DEFAULT_RTP)) / 100;
   const pRespin = 1000 / POOL_W;
-  const bonusRtp = (462 / POOL_W) * BONUS_EV;
+  const bonusRtp = (BONUS_W / POOL_W) * BONUS_EV;
   const k = Math.max(0.05, (R * (1 - pRespin) - bonusRtp - JACKPOT_CUT) / BASE_DIRECT);
   const out = BASE.map(o => ({ key: o.key, odds: o.odds,
     w: o.scale ? Math.max(1, Math.round(o.w * k)) : o.w }));
@@ -248,10 +270,7 @@ function rtpOf(outcomes) {
   return (direct + bonus + JACKPOT_CUT) / (1 - pRespin);
 }
 const BETTABLE = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
-const MIN_BET = 20 * 100, MAX_STAKE = 10000 * 100;
-
-/* Bonus pick-3: nine tiles, each a multiplier of TOTAL stake. Average total 8.667x. */
-const BONUS_TILES = [1, 1, 1, 2, 2, 3, 3, 5, 8];
+const MIN_BET = 10 * 100, MAX_STAKE = 10000 * 100;
 
 /* Withdrawal rules */
 const WD_MIN = 100, WD_MAX_MPESA = 70000, WD_DAILY_LIMIT = 3;
@@ -705,23 +724,42 @@ app.post("/api/withdraw/pesalink", auth, async (req, res) => {
 });
 
 /* ---------- settle one spin (shared by spin and free respin) ---------- */
-async function settle(user, bets, stake, live, st, freeSpin) {
-  const hit = drawOutcome(buildOutcomes(st.target_rtp));
-  let gross = 0, jackpotWin = 0, bonusToken = null, respin = false;
+/* What one landing pays, given what the player staked. ALL PRIZE pays every
+ * stake on the board; any other symbol pays only the stake sitting on it. */
+function payFor(key, odds, bets) {
+  if (key === "allprize") {
+    let p = 0;
+    for (const v of Object.values(bets)) p += Math.floor(Number(v)) * odds;
+    return p;
+  }
+  return bets[key] ? Math.floor(Number(bets[key])) * odds : 0;
+}
 
-  if (hit.key === "allprize") {
-    for (const v of Object.values(bets)) gross += Math.floor(Number(v)) * hit.odds;
-  } else if (hit.key === "bonus") {
-    const tiles = BONUS_TILES.slice();
-    for (let i = tiles.length - 1; i > 0; i--) {          // Fisher-Yates with CSPRNG
-      const j = crypto.randomInt(i + 1); const t = tiles[i]; tiles[i] = tiles[j]; tiles[j] = t;
+async function settle(user, bets, stake, live, st, freeSpin) {
+  const outcomes = buildOutcomes(st.target_rtp);
+  const hit = drawOutcome(outcomes);
+  let gross = 0, jackpotWin = 0, respin = false, extras = null;
+
+  if (hit.key === "bonus") {
+    /* The blue diamond: the wheel lands 2-3 more times on real symbols and
+     * each landing is settled exactly as an ordinary spin would be. Drawing
+     * from the symbol block alone means an extra landing always shows a real
+     * animal, and because the block is tuned to equal odds x weight, the
+     * expected return per landing is the same whatever the player backed. */
+    const pool = outcomes.filter(o => SYMBOL_KEYS.has(o.key));
+    const n = EXTRA_MIN + crypto.randomInt(EXTRA_MAX - EXTRA_MIN + 1);
+    extras = [];
+    for (let i = 0; i < n; i++) {
+      const pick = drawOutcome(pool);
+      const pay = payFor(pick.key, pick.odds, bets);
+      gross += pay;
+      extras.push({ key: pick.key, odds: pick.odds,
+                    slot: visualSlot(pick.key, pick.odds), payout: pay });
     }
-    bonusToken = sign({ uid: user.id, stake, tiles, live, exp: Date.now() + 10 * 60 * 1000,
-                        n: crypto.randomBytes(6).toString("hex") });
   } else if (hit.key === "respin") {
     respin = true;
-  } else if (bets[hit.key]) {
-    gross = Math.floor(Number(bets[hit.key])) * hit.odds;
+  } else {
+    gross = payFor(hit.key, hit.odds, bets);
   }
 
   const slot = visualSlot(hit.key, hit.odds);
@@ -768,7 +806,7 @@ async function settle(user, bets, stake, live, st, freeSpin) {
   }
   client.release();
   return { key: hit.key, slot, payout: netPayout, tax: taxTaken,
-           jackpot: jackpotWin, bonusToken, respin };
+           jackpot: jackpotWin, extras, respin };
 }
 
 /* ---------- the spin ---------- */
@@ -778,7 +816,8 @@ app.post("/api/spin", auth, async (req, res) => {
   for (const [k, v] of Object.entries(bets)) {
     if (!BETTABLE.includes(k)) return res.status(400).json({ error: "Unknown bet." });
     const amt = Math.floor(Number(v));
-    if (amt < MIN_BET) return res.status(400).json({ error: "Minimum KSh 20 per symbol." });
+    if (amt < MIN_BET)
+      return res.status(400).json({ error: "Minimum KSh " + (MIN_BET / 100) + " per symbol." });
     stake += amt;
   }
   if (!stake) return res.status(400).json({ error: "Place at least one bet." });
@@ -816,58 +855,14 @@ app.post("/api/spin", auth, async (req, res) => {
   const jp = await pool.query("SELECT pool FROM jackpot WHERE id=1");
   res.json({
     key: out.key, slot: out.slot, payout: out.payout, tax: out.tax, jackpot: out.jackpot,
-    bonus: out.bonusToken ? { token: out.bonusToken } : null,
+    extras: out.extras,
     respin: respinResult ? {
       key: respinResult.key, slot: respinResult.slot, payout: respinResult.payout,
       tax: respinResult.tax, jackpot: respinResult.jackpot,
-      bonus: respinResult.bonusToken ? { token: respinResult.bonusToken } : null,
+      extras: respinResult.extras,
     } : null,
     pool: Number(jp.rows[0].pool), balance: Number(u.rows[0].b),
     winnings: Number(u.rows[0].w), live,
-  });
-});
-
-/* ---------- diamond bonus: pick 3 of 9 ---------- */
-app.post("/api/bonus/pick", auth, async (req, res) => {
-  const t = verify(String(req.body.token || ""));
-  if (!t || t.uid !== req.user.id || t.exp < Date.now())
-    return res.status(400).json({ error: "Bonus expired." });
-  const picks = Array.isArray(req.body.picks) ? req.body.picks.map(Number) : [];
-  if (picks.length !== 3 || new Set(picks).size !== 3 || picks.some(i => !(i >= 0 && i < 9)))
-    return res.status(400).json({ error: "Pick exactly three tiles." });
-
-  const st = await getSettings();
-  const gross = picks.reduce((s, i) => s + t.tiles[i] * t.stake, 0);
-  const taxed = t.live ? applyWHT(gross, 0, st) : { net: gross, tax: 0 };
-  const winCol = t.live ? "winnings" : "demo_winnings";
-  const balCol = t.live ? "balance" : "demo_balance";
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    // the token nonce doubles as a unique ref, so a replayed request can't pay twice
-    const ins = await client.query(
-      `INSERT INTO tx(user_id,kind,amount,ref,status,created)
-       VALUES($1,'bonus',$2,$3,'success',$4) ON CONFLICT (ref) DO NOTHING`,
-      [req.user.id, taxed.net, "bonus_" + t.n, Date.now()]);
-    if (!ins.rowCount) throw new Error("dup");
-    await client.query(`UPDATE users SET ${winCol}=${winCol}+$2 WHERE id=$1`, [req.user.id, taxed.net]);
-    await client.query(
-      `INSERT INTO spins(user_id,bets,slot,stake,payout,demo,jackpot,tax,kind,created)
-       VALUES($1,'{}',0,0,$2,$3,0,$4,'bonus',$5)`,
-      [req.user.id, taxed.net, !t.live, taxed.tax, Date.now()]);
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK"); client.release();
-    return res.status(400).json({ error: "This bonus was already claimed." });
-  }
-  client.release();
-  const u = await pool.query(
-    `SELECT ${balCol} AS b, ${winCol} AS w FROM users WHERE id=$1`, [req.user.id]);
-  res.json({
-    revealed: picks.map(i => ({ i: i, mult: t.tiles[i] })),
-    all: t.tiles, payout: taxed.net, tax: taxed.tax,
-    balance: Number(u.rows[0].b), winnings: Number(u.rows[0].w),
   });
 });
 

@@ -82,8 +82,25 @@
        background:radial-gradient(circle at 35% 30%, #2a1414, #0d0505 70%);
        border:3px solid var(--gold);display:grid;place-items:center;align-content:center;
        box-shadow:0 0 40px rgba(0,0,0,.6)}
-  .hub .num{font-family:'Russo One';font-size:clamp(24px,8vw,38px);color:var(--led);
-            text-shadow:0 0 12px rgba(255,59,48,.9);line-height:1}
+  /* The jackpot used to sit in its own bar above the wheel, which pushed the
+     stake chips off a short screen. It lives in the hub now, where the wheel
+     already has empty space. */
+  .hub .jp{text-align:center;line-height:1.1;margin-bottom:6px}
+  .hub .jp span{font-family:'Russo One';font-size:clamp(7px,2.1vw,9px);color:#ffd98a;
+                letter-spacing:2px;display:block}
+  .hub .jp b{font-family:'Russo One';font-size:clamp(13px,4vw,18px);color:var(--gold);
+             text-shadow:0 0 10px rgba(243,196,64,.7)}
+  /* The wheel position is shown as the animal itself rather than a slot
+     number, which meant nothing to players. */
+  .hub .sym{display:grid;place-items:center;gap:3px;min-height:clamp(50px,15vw,74px)}
+  .hub .sym .pic{width:clamp(34px,10vw,50px);aspect-ratio:1;border-radius:50%;
+       background:#fff center/cover no-repeat;display:grid;place-items:center;
+       font-family:'Russo One';font-size:clamp(11px,3.4vw,16px);color:#fff;
+       border:2px solid rgba(255,255,255,.3);overflow:hidden}
+  .hub .sym .nm{font-family:'Russo One';font-size:clamp(9px,2.6vw,11px);color:#ffe08a;
+       letter-spacing:.5px;line-height:1}
+  .hub .sym .mx{font-family:'Russo One';font-size:clamp(12px,3.6vw,17px);color:var(--led);
+       text-shadow:0 0 10px rgba(255,59,48,.85);line-height:1}
   .hub .msg{font-size:clamp(9px,2.7vw,11px);color:#e8b7b7;margin-top:4px;min-height:15px;
             text-align:center;padding:0 10px}
   .slot{position:relative;border-radius:7px;display:grid;place-items:center;
@@ -151,9 +168,13 @@
   .bet .reps{position:absolute;top:2px;left:2px;min-width:15px;height:15px;padding:0 3px;
     border-radius:8px;background:#d92c20;color:#fff;font-family:'Russo One';font-size:9px;
     display:none;place-items:center;line-height:1}
-  .bet .tick{position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;
-    background:var(--gold);color:#241300;font-size:9px;font-weight:700;
-    display:none;place-items:center;line-height:1}
+  /* Press-and-hold to remove a stake was invisible to players, so an explicit
+     remove button sits on every staked tile. The long press still works. */
+  .bet .tick{position:absolute;top:1px;right:1px;width:20px;height:20px;border-radius:50%;
+    background:#d92c20;color:#fff;font-size:13px;font-weight:700;border:1.5px solid #ff8a80;
+    display:none;place-items:center;line-height:1;cursor:pointer;z-index:2;
+    -webkit-tap-highlight-color:transparent}
+  .bet .tick:active{transform:scale(.88)}
   .bet.active .tick{display:grid}
   .bet .amt{position:absolute;left:0;right:0;bottom:0;padding:1px 0;
     background:var(--gold);color:#241300;font-family:'Russo One';
@@ -223,12 +244,6 @@
   </button>
 </div>
 
-<div style="margin:5px 12px 0;background:linear-gradient(90deg,#3a2500,#6b4400,#3a2500);
-     border:2px solid var(--gold);border-radius:9px;text-align:center;padding:3px">
-  <span style="font-family:'Russo One';font-size:11px;color:#ffd98a;letter-spacing:2px">JACKPOT</span>
-  <div style="font-family:'Russo One';font-size:clamp(16px,5vw,21px);color:var(--gold);text-shadow:0 0 10px rgba(243,196,64,.7)" id="jackpotPool">KSh —</div>
-</div>
-
 <div id="winnersBar" style="display:none;margin:4px 12px 0;overflow:hidden;white-space:nowrap;
      background:#1a0b0b;border:1px solid #5a4a1c;border-radius:8px;padding:6px 0">
   <div id="winnersTrack" style="display:inline-block;padding-left:100%;animation:tick 30s linear infinite;
@@ -238,8 +253,12 @@
 @media (prefers-reduced-motion: reduce){#winnersTrack{animation:none;padding-left:8px}}</style>
 
 <div class="wheel-wrap" id="wheel">
-  <div class="hub"><div class="num" id="hubNum">--</div><div class="msg" id="hubMsg">Log in to play</div>
-  <div id="lastWin" style="display:none"></div></div>
+  <div class="hub">
+    <div class="jp"><span>JACKPOT</span><b id="jackpotPool">KSh &mdash;</b></div>
+    <div class="sym" id="hubSym"></div>
+    <div class="msg" id="hubMsg">Log in to play</div>
+    <div id="lastWin" style="display:none"></div>
+  </div>
 </div>
 
 <div class="bets" id="bets"></div>
@@ -258,7 +277,7 @@
 <!-- auth sheet -->
 <div class="sheet open" id="bootSheet"><div class="card" style="text-align:center">
   <h2 style="margin-bottom:6px">SAFARI SPIN</h2>
-  <p style="font-size:13px;color:#e6c9c9">Checking your session\u2026</p>
+  <p style="font-size:13px;color:#e6c9c9">Checking your session…</p>
 </div></div>
 
 <div class="sheet" id="authSheet"><div class="card">
@@ -299,15 +318,6 @@
 
   <p class="rg">Play responsibly. Betting is for entertainment — never stake money you can't afford to lose.
   If gambling stops being fun, free help is available.</p>
-</div></div>
-
-<!-- BONUS: pick 3 of 9 -->
-<div class="sheet" id="bonusSheet"><div class="card" style="border-color:#7a1fa0">
-  <h2 style="color:#e6a8ff">&#128142; DIAMOND BONUS — pick 3</h2>
-  <p style="font-size:12px;color:#e6c9c9;margin-bottom:10px" id="bonusMsg">Each tile hides a multiplier of your stake. Choose three.</p>
-  <div id="bonusGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"></div>
-  <div style="font-family:'Russo One';font-size:18px;color:var(--gold);text-align:center;margin-top:12px;min-height:24px" id="bonusTotal"></div>
-  <button id="bonusDone" style="display:none;width:100%;margin-top:10px">Collect</button>
 </div></div>
 
 <!-- PesaLink sheet -->
@@ -368,7 +378,7 @@ const WHEEL = ["star","star","allprize","zebra","giraffe","leopard","buffalo","d
   "zebra","lion","rhino","elephant","giraffe","leopard","buffalo","zebra","lion","rhino",
   "elephant","diamond","giraffe","leopard","buffalo","allprize"];
 const BETTABLE = ["star","elephant","rhino","lion","buffalo","leopard","giraffe","zebra"];
-const CHIP_VALUES = [20,50,100,200];
+const CHIP_VALUES = [10,20,50,100,200];
 
 let stakeTaps = {}, lastBets = {};
 let token = localStorage.getItem("fs_token") || null;
@@ -410,8 +420,15 @@ const sfx = {
   win(){ [523,659,784,1047].forEach((f,i)=>tone(f, 0.22, "triangle", 0.16, i*0.09)); },
   bigWin(){ [523,659,784,1047,1319].forEach((f,i)=>tone(f, 0.3, "triangle", 0.18, i*0.08));
             [392,523].forEach((f,i)=>tone(f, 0.5, "sine", 0.12, 0.45+i*0.12)); },
+  /* The jackpot climbs a bright major run and ends on a held chord. */
   jackpot(){ [523,587,659,698,784,880,988,1047].forEach((f,i)=>tone(f,0.35,"square",0.16,i*0.1));
              [1047,1319,1568].forEach((f,i)=>tone(f,0.8,"triangle",0.2,0.85+i*0.05)); },
+  /* The diamond is deliberately different: a low mysterious rise, not a
+     fanfare, so a bonus is never mistaken for a jackpot. */
+  bonus(){ [196,247,294,370].forEach((f,i)=>tone(f,0.3,"sine",0.15,i*0.11));
+           tone(466,0.5,"triangle",0.13,0.46); tone(622,0.55,"triangle",0.12,0.6); },
+  /* Each extra landing gets a short rising blip so the player can count them. */
+  extra(n){ tone(440+n*110, 0.16, "triangle", 0.16); },
   error(){ tone(180, 0.18, "square", 0.10); },
 };
 
@@ -490,6 +507,27 @@ function lightsWinner(slot){                    // WIN: only the winning slot pu
     on = !on;
     slots[slot].classList.toggle("lit-gold", on);
   }, 220);
+}
+
+/* ---------- HUB SYMBOL ----------
+   The hub used to show the slot index ("03"), which told the player nothing.
+   It now shows the symbol the wheel is on and what that symbol pays. */
+function setHubSymbol(key){
+  const box = $("hubSym"); if(!box) return;
+  if(!key){ box.innerHTML = ""; return; }
+  const t = ANIMALS[key] || {};
+  const label = key === "allprize" ? "ALL PRIZE"
+              : key === "diamond"  ? "DIAMOND"
+              : key === "star"     ? "STAR" : (t.n || key.toUpperCase());
+  const mult = key === "allprize" ? "2\u00D7"
+             : key === "diamond"  ? "BONUS"
+             : t.odds ? t.odds + "\u00D7" : "";
+  const face = (key === "star" || key === "diamond" || key === "allprize")
+    ? '<div class="pic" style="background:' + (t.c || "#333") + '">' +
+      (key === "allprize" ? "ALL" : t.n) + "</div>"
+    : '<div class="pic" style="background:#fff url(logos/' + key + '.png) center/cover no-repeat"></div>';
+  box.innerHTML = face + '<div class="nm">' + label + "</div>" +
+                  (mult ? '<div class="mx">' + mult + "</div>" : "");
 }
 
 /* ---------- RESULT MARKER ----------
@@ -588,7 +626,8 @@ BOARD.forEach(key=>{
   const t = ANIMALS[key], el = document.createElement("div");
   el.className = "bet"; el.id = "bet-"+key;
   el.innerHTML =
-    '<div class="tick">\u2713</div><div class="reps"></div>' +
+    '<div class="tick" id="del-'+key+'" role="button" aria-label="Remove this stake">\u00D7</div>'+
+    '<div class="reps"></div>' +
     '<div class="dot" style="background:'+t.c+'">'+t.n+'</div>' +
     '<small>'+(t.star ? "\u2605 STAR" : (t.big ? "BIG 5" : "PAYS"))+'</small>' +
     '<b>'+t.odds+'\u00D7</b>' +
@@ -621,6 +660,9 @@ BOARD.forEach(key=>{
      follows is swallowed — otherwise the stake was silently removed or
      re-added and the player had no idea. */
   el.oncontextmenu = e=>{ e.preventDefault(); clearOne(key); };
+  el.querySelector(".tick").addEventListener("click", e=>{
+    e.preventDefault(); e.stopPropagation(); clearOne(key);
+  });
   let lp = null, lpFired = false, sx = 0, sy = 0;
   el.addEventListener("touchstart", e=>{
     lpFired = false;
@@ -720,9 +762,15 @@ async function refreshWinners(){
     }
   }catch(e){}
 }
+/* A missing or malformed pool must leave the dash in place, never print
+   "KSh NaN" in the middle of the wheel. */
+function setPool(v){
+  const n = Number(v);
+  if(!Number.isFinite(n)) return;
+  $("jackpotPool").textContent = "KSh " + (n/100).toLocaleString("en-KE");
+}
 async function refreshPool(){
-  try{ const j = await fetch("/api/jackpot").then(r=>r.json());
-    $("jackpotPool").textContent = "KSh " + (j.pool/100).toLocaleString("en-KE"); }catch(e){}
+  try{ const j = await fetch("/api/jackpot").then(r=>r.json()); setPool(j && j.pool); }catch(e){}
 }
 
 function showPaybill(id){
@@ -909,50 +957,38 @@ $("plGo").onclick = async ()=>{
   finally{ plBusy = false; $("plGo").disabled = false; $("plGo").textContent = "Request transfer"; }
 };
 
-/* ---- diamond bonus: pick 3 of 9 ---- */
-function playBonus(token){
-  return new Promise(resolve=>{
-    const grid=$("bonusGrid"); grid.innerHTML=""; let picked=[];
-    $("bonusTotal").textContent=""; $("bonusDone").style.display="none";
-    $("bonusMsg").textContent="Each tile hides a multiplier of your stake. Choose three.";
-    for(let i=0;i<9;i++){
-      const t=document.createElement("button");
-      t.textContent="?"; t.dataset.i=i;
-      t.style.cssText="aspect-ratio:1;font-size:20px;background:linear-gradient(#6a2a9e,#3d1560);color:#fff;box-shadow:0 3px 0 #24093a;border-radius:12px;padding:0";
-      t.onclick=async ()=>{
-        if(picked.length>=3||picked.includes(i)) return;
-        picked.push(i); t.disabled=true; t.style.opacity="1";
-        t.textContent="\u2726"; sfx.chip();
-        if(picked.length===3){
-          $("bonusMsg").textContent="Revealing…";
-          try{
-            const r=await api("bonus/pick",{token:token,picks:picked});
-            const rev={}; r.revealed.forEach(x=>rev[x.i]=x.mult);
-            [...grid.children].forEach((b,idx)=>{
-              b.disabled=true;
-              if(rev[idx]!=null){ b.textContent=rev[idx]+"\u00D7";
-                b.style.background="linear-gradient(#ffe08a,var(--gold))"; b.style.color="#241300"; }
-              else { b.textContent=r.all[idx]+"\u00D7"; b.style.opacity=".35"; }
-            });
-            setBalance(r.balance); setWinnings(r.winnings);
-            $("bonusTotal").innerHTML="BONUS WIN: KSh "+(r.payout/100).toLocaleString()+
-              (r.tax>0?"<br><span style='font-size:11px;color:#caa'>after KSh "+(r.tax/100).toLocaleString()+" withholding tax</span>":"");
-            $("bonusMsg").textContent="";
-            sfx.bigWin();
-            if(navigator.vibrate) navigator.vibrate([120,60,120,60,200]);
-            $("bonusDone").style.display="block";
-            $("bonusDone").onclick=()=>{ close_("bonusSheet"); stopMusic(); resolve(); };
-          }catch(e){
-            $("bonusMsg").textContent=e.message; sfx.error();
-            $("bonusDone").style.display="block";
-            $("bonusDone").onclick=()=>{ close_("bonusSheet"); resolve(); };
-          }
-        }
-      };
-      grid.appendChild(t);
-    }
-    open_("bonusSheet");
-  });
+/* ---- diamond: the wheel lands 2-3 more times ----
+   Each extra landing is a real spin result the server already settled; the
+   client only replays them so the player can see where they fell. */
+async function playExtras(extras){
+  setMusic("bonus");
+  $("hubMsg").textContent = "\u25C6 DIAMOND \u2014 " + extras.length + " BONUS LANDINGS";
+  lightsPurplePulse();
+  sfx.bonus();
+  if(navigator.vibrate) navigator.vibrate([150,60,150]);
+  await new Promise(r=>setTimeout(r,1100));
+
+  let total = 0;
+  for(let i=0;i<extras.length;i++){
+    const x = extras[i];
+    stopLights();
+    await chase(x.slot, true);                 // short chase, music keeps running
+    total += Number(x.payout||0);
+    markLanded(x.slot, lastBets, Number(x.payout||0));
+    sfx.extra(i);
+    $("hubMsg").innerHTML = "LANDING " + (i+1) + " OF " + extras.length + "<br>" +
+      (x.payout > 0
+        ? "<b style='color:#7bffa8'>+ KSh " + (x.payout/100).toLocaleString() + "</b>"
+        : "<span style='color:#ff9c93'>no win</span>");
+    if(x.payout > 0) sfx.win();
+    await new Promise(r=>setTimeout(r,1200));
+  }
+  stopLights(); stopMusic();
+  $("hubMsg").innerHTML = total > 0
+    ? "DIAMOND TOTAL<br><b>KSh " + (total/100).toLocaleString() + "</b>"
+    : "Diamond landed on nothing you backed";
+  if(total > 0){ sfx.bigWin(); if(navigator.vibrate) navigator.vibrate([120,60,120,60,200]); }
+  await new Promise(r=>setTimeout(r,1500));
 }
 
 /* ---- present one spin outcome ---- */
@@ -962,19 +998,14 @@ async function showOutcome(d,isRespin){
   if(d.jackpot>0){
     // JACKPOT: gold/purple wave around the whole wheel + triumphant theme
     $("hubMsg").textContent="JACKPOT! KSh "+(d.jackpot/100).toLocaleString();
-    $("hubNum").textContent="JP";
+    setHubSymbol("star");
     lightsRainbow(); sfx.jackpot(); setMusic("jackpot");
     if(navigator.vibrate) navigator.vibrate([200,80,200,80,400]);
     await new Promise(r=>setTimeout(r,4200));
     stopLights(); stopMusic();
-  } else if(d.key==="bonus" && d.bonus){
-    // BONUS: purple breathing lights + mysterious theme through the pick game
-    $("hubMsg").textContent="\u{1F48E} DIAMOND BONUS!";
-    lightsPurplePulse(); sfx.bigWin(); setMusic("bonus");
-    if(navigator.vibrate) navigator.vibrate([150,60,150]);
-    await new Promise(r=>setTimeout(r,900));
-    await playBonus(d.bonus.token);
-    stopLights(); stopMusic();
+  } else if(d.key==="bonus" && d.extras && d.extras.length){
+    // DIAMOND: the wheel runs on and lands 2-3 more times
+    await playExtras(d.extras);
   } else if(d.key==="respin"){
     // FREE SPIN: green blink, brief
     $("hubMsg").textContent="\u{1F48E} FREE SPIN!";
@@ -997,8 +1028,12 @@ async function showOutcome(d,isRespin){
     $("hubMsg").textContent = isRespin ? "Free spin — no win" : "No win";
     sfx.lose();
   }
-  // leave the landing colour-coded until the player picks again
-  markLanded(d.slot, lastBets, Number(d.payout || 0) + Number(d.jackpot || 0));
+  /* Leave the landing colour-coded until the player picks again. After a
+     diamond run the interesting landing is the last extra one, not the blue
+     slot the wheel first stopped on. */
+  const last = (d.extras && d.extras.length) ? d.extras[d.extras.length-1] : null;
+  if(last) markLanded(last.slot, lastBets, Number(last.payout||0));
+  else markLanded(d.slot, lastBets, Number(d.payout || 0) + Number(d.jackpot || 0));
 }
 
 /* ---- spin with light chase ---- */
@@ -1016,7 +1051,7 @@ $("spinBtn").onclick = async ()=>{
     await showOutcome(d,false);
     if(d.respin) await showOutcome(d.respin,true);
     setBalance(d.balance); setWinnings(d.winnings);
-    if(d.pool!=null) $("jackpotPool").textContent = "KSh " + (d.pool/100).toLocaleString("en-KE");
+    setPool(d.pool);
     if(d.live===false) applyMode(false); else refreshWinners();
   }catch(e){
     stopLights(); stopMusic();
@@ -1030,22 +1065,24 @@ $("spinBtn").onclick = async ()=>{
   setMusic("idle");                        // ambient loop returns between rounds
 };
 
-function chase(target){
+/* `short` is used for the diamond's extra landings: one lap instead of three,
+   and the bonus theme keeps playing underneath rather than cutting out. */
+function chase(target, short){
   return new Promise(res=>{
     stopLights();
-    setMusic("spin");                       // driving loop while the wheel runs
-    const total = WHEEL.length*3 + target;
-    let i=0, delay=40;
+    if(!short) setMusic("spin");            // driving loop while the wheel runs
+    const total = WHEEL.length*(short?1:3) + target;
+    let i=0, delay=short?34:40;
     (function step(){
       slots.forEach(s=>s.classList.remove("lit"));
       slots[i%WHEEL.length].classList.add("lit");
-      $("hubNum").textContent = String(i%WHEEL.length).padStart(2,"0");
+      setHubSymbol(WHEEL[i%WHEEL.length]);
       sfx.tick();
       if(i>=total){
-        stopMusic();                        // music stops exactly where the wheel stops
-        return setTimeout(res,400);
+        if(!short) stopMusic();             // music stops exactly where the wheel stops
+        return setTimeout(res,short?250:400);
       }
-      i++; delay = i>total-10 ? delay+35 : delay;
+      i++; delay = i>total-10 ? delay+(short?22:35) : delay;
       setTimeout(step, delay);
     })();
   });
@@ -1058,8 +1095,8 @@ document.addEventListener("visibilitychange",()=>{
 (function(){
   const touch = window.matchMedia("(hover:none)").matches;
   $("betHint").textContent = touch
-    ? "Tap to stake · tap again to add more · press and hold to remove"
-    : "Click to stake · click again to add more · right-click to remove";
+    ? "Tap a symbol to stake · tap again to add more · tap × to remove"
+    : "Click a symbol to stake · click again to add more · click × to remove";
 })();
 ["loginPhone","loginPassword"].forEach(id=>{
   const el = $(id);
