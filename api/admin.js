@@ -9,7 +9,7 @@
  */
 const crypto = require("crypto");
 
-module.exports = function mountAdmin(app, pool, sign, verify) {
+module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
   const { ADMIN_PATH, ADMIN_PASSWORD, ADMIN_TOTP_SECRET } = process.env;
 
   /* TEMPORARY 2FA BYPASS — recovery only.
@@ -284,7 +284,7 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
 
   /* ----- switches ----- */
   const BOOL_KEYS = ["live_mode", "withdrawals_enabled", "wht_enabled"];
-  const NUM_KEYS = ["wht_rate", "wht_threshold", "excise_rate", "betting_tax_rate", "corp_tax_rate", "target_rtp", "target_net"];
+  const NUM_KEYS = ["wht_rate", "wht_threshold", "excise_rate", "betting_tax_rate", "corp_tax_rate", "target_rtp", "target_net", "min_deposit", "max_deposit"];
 
   app.post(`${P}/settings`, adminAuth, async (req, res) => {
     for (const k of BOOL_KEYS) {
@@ -381,6 +381,66 @@ module.exports = function mountAdmin(app, pool, sign, verify) {
     res.json(r.rows);
   });
 
+  /* ----- payout queue: pending / stuck / failed M-Pesa withdrawals ----- */
+  app.get(`${P}/payouts`, adminAuth, async (_req, res) => {
+    const r = await pool.query(
+      `SELECT t.id, t.user_id, t.amount, t.ref, t.status, t.phone, t.created,
+              u.full_name, u.id_number
+       FROM tx t JOIN users u ON u.id=t.user_id
+       WHERE t.kind='withdraw'
+       ORDER BY (t.status IN ('sending','pending')) DESC, t.id DESC LIMIT 60`);
+    res.json(r.rows.map(x => ({ ...x, amount: Number(x.amount) })));
+  });
+
+  /* Manual settlement. "paid" is for money you sent by hand (or that Safaricom
+   * delivered without a callback reaching us); "refund" returns it to the
+   * player; "retry" sends the Paystack transfer again. */
+  app.post(`${P}/payouts/:ref`, adminAuth, wrap(async (req, res) => {
+    const action = String(req.body.action || "");
+    const t = (await pool.query(
+      "SELECT * FROM tx WHERE ref=$1 AND kind='withdraw'", [req.params.ref])).rows[0];
+    if (!t) return res.status(404).json({ error: "Payout not found." });
+    if (t.status === "success" && action !== "note")
+      return res.status(400).json({ error: "Already marked paid." });
+
+    if (action === "paid") {
+      await pool.query("UPDATE tx SET status='success' WHERE id=$1", [t.id]);
+      return res.json({ ok: true, message: "Marked paid." });
+    }
+
+    if (action === "refund") {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const upd = await client.query(
+          "UPDATE tx SET status='failed' WHERE id=$1 AND status<>'failed'", [t.id]);
+        if (upd.rowCount)
+          await client.query("UPDATE users SET winnings=winnings+$2 WHERE id=$1",
+            [t.user_id, Number(t.amount)]);
+        await client.query("COMMIT");
+      } catch (e) { await client.query("ROLLBACK"); throw e; }
+      finally { client.release(); }
+      return res.json({ ok: true, message: "Refunded to the player." });
+    }
+
+    if (action === "retry") {
+      if (!payouts || !payouts.sendTransfer)
+        return res.status(500).json({ error: "Payout helper unavailable." });
+      const u = (await pool.query("SELECT full_name FROM users WHERE id=$1", [t.user_id])).rows[0];
+      const newRef = t.ref + "_r" + Date.now().toString(36);
+      await pool.query("UPDATE tx SET status='sending', ref=$2 WHERE id=$1", [t.id, newRef]);
+      const out = await payouts.sendTransfer({
+        name: u && u.full_name, phone: t.phone, cents: Number(t.amount), ref: newRef });
+      if (!out.ok) {
+        await pool.query("UPDATE tx SET status='pending' WHERE id=$1", [t.id]);
+        return res.status(502).json({ error: out.error });
+      }
+      await pool.query("UPDATE tx SET status='pending' WHERE id=$1", [t.id]);
+      return res.json({ ok: true, message: "Payout re-sent." });
+    }
+    res.status(400).json({ error: "Unknown action." });
+  }));
+
   /* ----- PesaLink queue (large withdrawals, paid manually from your bank) ----- */
   app.get(`${P}/pesalink`, adminAuth, async (_req, res) => {
     const r = await pool.query(
@@ -472,7 +532,28 @@ button.on{background:#1f6feb;border-color:#1f6feb}button.danger{background:#da36
 input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:9px;width:100%;box-sizing:border-box;margin:4px 0}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 #login{max-width:320px;margin:80px auto}
-.scroll{overflow-x:auto}.err{color:#f85149;font-size:13px;min-height:16px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.err{color:#f85149;font-size:13px;min-height:16px}
+@media (max-width:720px){
+  body{padding:10px}
+  h1{font-size:16px}
+  h2{font-size:12px;margin:16px 0 6px}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+  .card b{font-size:15px}
+  input,select{font-size:16px}            /* stops iOS zooming on focus */
+  button{padding:10px 12px}
+  .row{gap:6px}
+  .row > label{flex:1 1 46%;font-size:11px}
+  .row > label input{width:100% !important}
+  /* each table row becomes its own block, with the header as a prefix */
+  table.resp thead{display:none}
+  table.resp tr{display:block;border:1px solid #30363d;border-radius:10px;
+    margin-bottom:8px;padding:6px 8px;background:#161b22}
+  table.resp td{display:flex;justify-content:space-between;gap:10px;
+    border:0;padding:4px 0;white-space:normal;text-align:right}
+  table.resp td::before{content:attr(data-l);color:#7d8590;font-size:11px;
+    text-transform:uppercase;text-align:left;flex:0 0 42%}
+}
 .badge{font-size:10px;padding:2px 8px;border-radius:999px;background:#21262d}
 .badge.live{background:#238636}.badge.demo{background:#9e6a03}
 </style></head><body>
@@ -503,6 +584,14 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
     <input id="jp" type="number" placeholder="Jackpot KSh" style="width:130px">
     <button id="jpBtn">Set jackpot</button>
   </div>
+  <div class="row" style="margin-top:8px">
+    <label style="font-size:12px;color:#7d8590">Min deposit KSh
+      <input id="minDep" type="number" min="1" style="width:110px"></label>
+    <label style="font-size:12px;color:#7d8590">Max deposit KSh
+      <input id="maxDep" type="number" min="1" style="width:130px"></label>
+    <button id="depSave">Save deposit limits</button>
+    <span id="depOut" style="font-size:12px;color:#7d8590"></span>
+  </div>
   <p style="color:#7d8590;font-size:12px">Pause withdrawals during a glitch — deposits and play continue, balances are safe. Demo mode pauses all real money; players get free credits.</p>
 
   <h2>Payout rate (house margin)</h2>
@@ -521,7 +610,7 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
     <span id="netOut" style="font-size:13px"></span>
   </div>
   <p style="color:#7d8590;font-size:12px">Takes effect on the next spin. All bet types stay at the same RTP. Every change is timestamped in the change log — BCLB audits declared payout rates, so keep this matching your licence.</p>
-  <div class="scroll" id="auditWrap" style="display:none;margin-top:8px"><table id="audit"><thead><tr><th>When</th><th>Setting</th><th>From</th><th>To</th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll" id="auditWrap" style="display:none;margin-top:8px"><table id="audit" class="resp"><thead><tr><th>When</th><th>Setting</th><th>From</th><th>To</th></tr></thead><tbody></tbody></table></div>
 
   <h2>Marketing &amp; expenses</h2>
   <div class="row">
@@ -536,7 +625,7 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
     <input id="expNote" placeholder="Note (e.g. Facebook campaign)" style="flex:1;min-width:160px">
     <button id="expAdd" class="on">Record spend</button>
   </div>
-  <div class="scroll" style="margin-top:8px"><table id="exp"><thead><tr><th>Date</th><th>Category</th><th>Amount</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll" style="margin-top:8px"><table id="exp" class="resp"><thead><tr><th>Date</th><th>Category</th><th>Amount</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>
 
   <h2>Tax &amp; margin</h2>
   <div class="row">
@@ -550,19 +639,25 @@ input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:8p
   <div class="card" id="marginCalc" style="margin-top:10px"></div>
   <p style="color:#7d8590;font-size:12px">Withholding tax is deducted from the player's winnings and remitted to KRA — it is not your revenue. Rates change; confirm current figures with your accountant. Turning WHT off while the law requires it is tax evasion.</p>
 
+  <h2>Payouts — pending &amp; manual settlement</h2>
+  <p style="color:#7d8590;font-size:12px">"Pending" means the transfer was sent but Paystack has not confirmed delivery yet. Mark paid if you settled it by hand, retry to send again, or refund to return the money to the player.</p>
+  <div class="scroll"><table id="payouts" class="resp"><thead><tr>
+    <th>Ref</th><th>Player</th><th>Phone</th><th>Amount</th><th>Status</th><th>When</th><th></th>
+  </tr></thead><tbody></tbody></table></div>
+
   <h2 class="row" style="justify-content:space-between">PesaLink requests (pay from your bank, then mark paid)</h2>
-  <div class="scroll"><table id="pl"><thead><tr><th>Ref</th><th>Player</th><th>Nat. ID</th><th>Amount</th><th>Bank</th><th>Account</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll"><table id="pl" class="resp"><thead><tr><th>Ref</th><th>Player</th><th>Nat. ID</th><th>Amount</th><th>Bank</th><th>Account</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
 
   <h2>Profit per day (live spins only)</h2>
-  <div class="scroll"><table id="daily"><thead><tr><th>Date</th><th>Spins</th><th>Staked</th><th>Paid out</th><th>Gross profit</th><th>Marketing</th><th>After spend</th><th>Margin</th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll"><table id="daily" class="resp"><thead><tr><th>Date</th><th>Spins</th><th>Staked</th><th>Paid out</th><th>Gross profit</th><th>Marketing</th><th>After spend</th><th>Margin</th></tr></thead><tbody></tbody></table></div>
 
   <h2>Players</h2>
   <div class="row"><input id="q" placeholder="Search email" style="flex:1"><button id="searchBtn">Search</button></div>
-  <div class="scroll"><table id="players"><thead><tr><th>ID</th><th>Name</th><th>Nat. ID</th><th>Email</th><th>Phone</th><th>Balance</th><th>Deposited</th><th>Withdrawn</th><th>Net lost</th><th></th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll"><table id="players" class="resp"><thead><tr><th>ID</th><th>Name</th><th>Nat. ID</th><th>Email</th><th>Phone</th><th>Balance</th><th>Deposited</th><th>Withdrawn</th><th>Net lost</th><th></th></tr></thead><tbody></tbody></table></div>
 
   <h2 class="row" style="justify-content:space-between">Recent transactions
     <button id="exportBtn">Download all (CSV)</button></h2>
-  <div class="scroll"><table id="tx"><thead><tr><th>ID</th><th>Player</th><th>Kind</th><th>Amount</th><th>Status</th><th>Phone</th><th>When</th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll"><table id="tx" class="resp"><thead><tr><th>ID</th><th>Player</th><th>Kind</th><th>Amount</th><th>Status</th><th>Phone</th><th>When</th></tr></thead><tbody></tbody></table></div>
 </div>
 <script>
 /* Nothing should ever fail invisibly on this screen. */
@@ -688,7 +783,9 @@ async function show(){
       p.insertBefore(b,p.firstChild);
     }
   }catch(e){}
-  await refresh();loadPlayers();loadTx();loadPesalink();loadExpenses();
+  await refresh();
+  await Promise.all([loadPlayers(),loadTx(),loadPesalink(),loadExpenses(),loadPayouts()]);
+  labelAll();
 }
 
 async function refresh(){
@@ -732,6 +829,9 @@ async function refresh(){
   var btnWht=document.getElementById("btnWht");
   btnWht.textContent=S.wht_enabled?"WHT ON — charging":"WHT OFF — not charging";
   btnWht.className=S.wht_enabled?"on":"danger";
+  var mn=document.getElementById("minDep"), mx=document.getElementById("maxDep");
+  if(document.activeElement!==mn) mn.value=S.min_deposit;
+  if(document.activeElement!==mx) mx.value=S.max_deposit;
   document.getElementById("whtRate").value=S.wht_rate;
   document.getElementById("exRate").value=S.excise_rate;
   document.getElementById("btRate").value=S.betting_tax_rate;
@@ -805,6 +905,7 @@ async function loadExpenses(){
       "</td><td>"+K(x.amount)+"</td><td>"+(x.note||"")+
       '</td><td><button class="expdel" data-id="'+x.id+'">Delete</button></td></tr>';
   }).join("");
+  labelCells("exp");
   document.querySelectorAll(".expdel").forEach(function(b){
     b.onclick=async function(){ if(!confirm("Delete this entry?"))return;
       await api("/expenses/"+b.dataset.id+"/delete",{});loadExpenses();refresh(); };
@@ -818,6 +919,49 @@ async function addExpense(){
   document.getElementById("expAmt").value="";document.getElementById("expNote").value="";
   loadExpenses();refresh();
 }
+/* On phones each row becomes a card, and every cell shows its column name.
+   Deriving the labels from <thead> keeps them correct for every table. */
+function labelCells(id){
+  var t=document.getElementById(id); if(!t) return;
+  var hs=[].map.call(t.tHead.rows[0].cells, function(th){ return th.textContent.trim(); });
+  [].forEach.call(t.tBodies[0].rows, function(tr){
+    [].forEach.call(tr.cells, function(td,i){ if(!td.dataset.l) td.dataset.l = hs[i]||""; });
+  });
+}
+function labelAll(){ ["daily","players","tx","exp","pl","audit","payouts"].forEach(labelCells); }
+
+async function loadPayouts(){
+  var p=await api("/payouts");
+  var cls=function(st){ return st==="success"?"pos":(st==="failed"?"neg":""); };
+  document.getElementById("payouts").tBodies[0].innerHTML=p.map(function(x){
+    var act = x.status==="success" ? "" :
+      '<button class="pobtn on" data-ref="'+x.ref+'" data-a="paid">Mark paid</button> '+
+      '<button class="pobtn" data-ref="'+x.ref+'" data-a="retry">Retry</button> '+
+      '<button class="pobtn danger" data-ref="'+x.ref+'" data-a="refund">Refund</button>';
+    return "<tr>"+
+      '<td data-l="Ref">'+x.ref.slice(0,10)+"</td>"+
+      '<td data-l="Player">'+(x.full_name||"\u2014")+"</td>"+
+      '<td data-l="Phone">'+(x.phone?"0"+String(x.phone).slice(3):"\u2014")+"</td>"+
+      '<td data-l="Amount">'+K(x.amount)+"</td>"+
+      '<td data-l="Status" class="'+cls(x.status)+'">'+x.status+"</td>"+
+      '<td data-l="When">'+new Date(Number(x.created)).toLocaleString()+"</td>"+
+      '<td data-l="">'+act+"</td></tr>";
+  }).join("");
+  labelCells("payouts");
+  document.querySelectorAll(".pobtn").forEach(function(b){
+    b.onclick=async function(){
+      var a=b.dataset.a;
+      var msg = a==="refund" ? "Refund this payout to the player?"
+        : a==="retry" ? "Send this payout again?"
+        : "Mark this payout as paid? Only do this if the money really reached them.";
+      if(!confirm(msg)) return;
+      b.disabled=true;
+      try{ var r=await api("/payouts/"+b.dataset.ref,{action:a}); alert(r.message||"Done"); }
+      catch(e){ alert(e.message); }
+      b.disabled=false; await loadPayouts(); refresh().then(labelAll);
+    };
+  });
+}
 async function loadPesalink(){
   var p=await api("/pesalink");
   document.getElementById("pl").tBodies[0].innerHTML=p.map(function(x){
@@ -829,6 +973,7 @@ async function loadPesalink(){
       "</td><td>"+K(x.amount)+"</td><td>"+(x.bank||"")+"</td><td>"+(x.account||"")+
       "</td><td>"+x.status+"</td><td>"+act+"</td></tr>";
   }).join("");
+  labelCells("pl");
   document.querySelectorAll(".plbtn").forEach(function(b){
     b.onclick=async function(){
       if(b.dataset.a==="reject"&&!confirm("Reject and refund this request?"))return;
@@ -861,6 +1006,7 @@ async function loadPlayers(){
       '<td class="'+(u.net_lost>=0?"pos":"neg")+'">'+K(u.net_lost)+"</td>"+
       '<td><button class="suspbtn'+(u.suspended?" on":"")+'" data-id="'+u.id+'" data-v="'+(!u.suspended)+'">'+(u.suspended?"Unsuspend":"Suspend")+"</button></td></tr>";
   }).join("");
+  labelCells("players");
   document.querySelectorAll(".idvbtn").forEach(function(b){
     b.onclick=function(){idv(Number(b.dataset.id), b.dataset.v==="true");};
   });
@@ -918,6 +1064,14 @@ document.getElementById("btnWht").onclick=function(){
   api("/settings",{wht_enabled:!S.wht_enabled}).then(refresh);
 };
 document.getElementById("taxSave").onclick=saveTax;
+document.getElementById("depSave").onclick=async function(){
+  var mn=Number(document.getElementById("minDep").value);
+  var mx=Number(document.getElementById("maxDep").value);
+  if(!(mn>0)||!(mx>mn)){ document.getElementById("depOut").textContent="Max must be above min."; return; }
+  try{ await api("/settings",{min_deposit:mn,max_deposit:mx});
+    document.getElementById("depOut").textContent="Saved."; refresh();
+  }catch(e){ document.getElementById("depOut").textContent=e.message; }
+};
 
 document.getElementById("rtpSave").onclick=saveRtp;
 document.getElementById("netSolve").onclick=function(){solveMargin(false)};
@@ -938,7 +1092,7 @@ document.getElementById("exportBtn").onclick=exportTx;
 if(T)show();
 refreshTimer = setInterval(function(){
   if(T && document.getElementById("panel").style.display!=="none"){
-    refresh().catch(function(){});      // 401s are handled inside api()
+    refresh().then(labelAll).catch(function(){});   // 401s are handled inside api()
   }
 },30000);
 </script></body></html>`;

@@ -62,7 +62,8 @@ async function init() {
          ('live_mode','true'),('withdrawals_enabled','true'),
          ('wht_enabled','true'),('wht_rate','20'),('wht_threshold','0'),
          ('excise_rate','15'),('betting_tax_rate','15'),('corp_tax_rate','30'),
-         ('target_rtp','32'),('target_net','30')
+         ('target_rtp','32'),('target_net','30'),
+         ('min_deposit','20'),('max_deposit','100000')
         ON CONFLICT DO NOTHING`,
       `CREATE TABLE IF NOT EXISTS expenses(
         id SERIAL PRIMARY KEY, category TEXT, amount BIGINT, note TEXT, created BIGINT)`,
@@ -323,7 +324,9 @@ app.get("/api/me", auth, async (req, res) => {
     winnings: Number(st.live_mode ? req.user.winnings : req.user.demo_winnings) || 0,
     live: st.live_mode, withdrawals: st.withdrawals_enabled,
     wht: st.wht_enabled ? st.wht_rate : 0,
-    wd_max: WD_MAX_MPESA, wd_daily: WD_DAILY_LIMIT });
+    wd_max: WD_MAX_MPESA, wd_daily: WD_DAILY_LIMIT,
+    min_deposit: Number(st.min_deposit) || 20,
+    max_deposit: Number(st.max_deposit) || 100000 });
 });
 
 /* ---------- deposit: STK push to your paybill ---------- */
@@ -333,8 +336,11 @@ app.post("/api/deposit/init", auth, async (req, res) => {
   if (req.user.suspended) return res.status(403).json({ error: "Account under review. Contact support." });
   const amountKes = Math.floor(Number(req.body.amount));
   const phone = req.body.phone ? msisdn(req.body.phone) : req.user.phone;
-  if (!amountKes || amountKes < 100) return res.status(400).json({ error: "Minimum deposit is KSh 100." });
-  if (amountKes > 100000) return res.status(400).json({ error: "Maximum deposit is KSh 100,000." });
+  const minDep = Number(st.min_deposit) || 20, maxDep = Number(st.max_deposit) || 100000;
+  if (!amountKes || amountKes < minDep)
+    return res.status(400).json({ error: `Minimum deposit is KSh ${minDep.toLocaleString()}.` });
+  if (amountKes > maxDep)
+    return res.status(400).json({ error: `Maximum deposit is KSh ${maxDep.toLocaleString()}.` });
   if (!phone) return res.status(400).json({ error: "Enter a valid Safaricom number, e.g. 07XX XXX XXX." });
 
   const ts = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
@@ -416,9 +422,11 @@ app.post("/api/mpesa/c2b/validate/:token", async (req, res) => {
   if (req.params.token !== CALLBACK_TOKEN) return res.sendStatus(403);
   const userId = parseInt(String((req.body || {}).BillRefNumber || "").replace(/\D/g, ""), 10);
   const amt = Number((req.body || {}).TransAmount || 0);
+  const cst = await getSettings();
+  const cMin = Number(cst.min_deposit) || 20, cMax = Number(cst.max_deposit) || 100000;
   const u = userId ? (await pool.query("SELECT id FROM users WHERE id=$1", [userId])).rows[0] : null;
   if (!u) return res.json({ ResultCode: "C2B00012", ResultDesc: "Rejected" });
-  if (amt < 100 || amt > 100000) return res.json({ ResultCode: "C2B00013", ResultDesc: "Rejected" });
+  if (amt < cMin || amt > cMax) return res.json({ ResultCode: "C2B00013", ResultDesc: "Rejected" });
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
@@ -574,28 +582,52 @@ app.post("/api/withdraw", auth, async (req, res) => {
     return res.status(403).json({ error: "Verify your account with one deposit before withdrawing." });
   if (await withdrawalsToday(req.user.id) >= WD_DAILY_LIMIT)
     return res.status(429).json({ error: `Daily limit reached (${WD_DAILY_LIMIT} withdrawals). Try again tomorrow.` });
-  const held = Number(req.user.winnings) || 0;
-  const available = held + req.user.balance;
-  if (cents > available) return res.status(400).json({ error: "Insufficient balance." });
+  // A second tap used to slip past the balance check while the first request
+  // was still in flight: one would succeed and the other would report
+  // "insufficient balance", so the player saw an error AND got the money.
+  // The row lock below makes the check and the debit a single atomic step.
+  const inflight = await pool.query(
+    `SELECT 1 FROM tx WHERE user_id=$1 AND kind IN ('withdraw','pesalink')
+     AND status='sending' AND created > $2 LIMIT 1`,
+    [req.user.id, Date.now() - 120000]);
+  if (inflight.rowCount)
+    return res.status(409).json({ error: "A withdrawal is already being processed. Give it a moment." });
 
-  // take from winnings first, then from playable credit
-  const fromWin = Math.min(held, cents);
-  const fromBal = cents - fromWin;
-  const deb = await pool.query(
-    `UPDATE users SET winnings=winnings-$2, balance=balance-$3
-     WHERE id=$1 AND winnings>=$2 AND balance>=$3`,
-    [req.user.id, fromWin, fromBal]);
-  if (!deb.rowCount) return res.status(400).json({ error: "Insufficient balance." });
   const ref = "wd_" + crypto.randomBytes(10).toString("hex");
-  await pool.query(
-    "INSERT INTO tx(user_id,kind,amount,ref,status,phone,created) VALUES($1,'withdraw',$2,$3,'sending',$4,$5)",
-    [req.user.id, cents, ref, phone, Date.now()]);
+  let fromWin = 0, fromBal = 0;
+  const lockClient = await pool.connect();
+  try {
+    await lockClient.query("BEGIN");
+    // FOR UPDATE: no other request can read this row until we commit
+    const me = await lockClient.query(
+      "SELECT balance, winnings FROM users WHERE id=$1 FOR UPDATE", [req.user.id]);
+    const bal = Number(me.rows[0].balance), held = Number(me.rows[0].winnings) || 0;
+    if (cents > bal + held) {
+      await lockClient.query("ROLLBACK");
+      lockClient.release();
+      return res.status(400).json({ error: "Insufficient balance." });
+    }
+    fromWin = Math.min(held, cents);
+    fromBal = cents - fromWin;
+    await lockClient.query(
+      "UPDATE users SET winnings=winnings-$2, balance=balance-$3 WHERE id=$1",
+      [req.user.id, fromWin, fromBal]);
+    await lockClient.query(
+      "INSERT INTO tx(user_id,kind,amount,ref,status,phone,created) VALUES($1,'withdraw',$2,$3,'sending',$4,$5)",
+      [req.user.id, cents, ref, phone, Date.now()]);
+    await lockClient.query("COMMIT");
+  } catch (e) {
+    try { await lockClient.query("ROLLBACK"); } catch (e2) {}
+    lockClient.release();
+    return res.status(500).json({ error: "Could not start the withdrawal. Your balance was not charged." });
+  }
+  lockClient.release();
 
   const out = await sendTransfer({ name: req.user.full_name, phone: phone, cents: cents, ref: ref });
   if (!out.ok) {
     await pool.query("UPDATE tx SET status='failed' WHERE ref=$1", [ref]);
     await pool.query("UPDATE users SET winnings=winnings+$2, balance=balance+$3 WHERE id=$1",
-      [fromWin, fromBal, req.user.id]);
+      [req.user.id, fromWin, fromBal]);
     return res.status(502).json({ error: out.error + " Your balance was not charged." });
   }
   await pool.query("UPDATE tx SET status='pending' WHERE ref=$1", [ref]);
@@ -835,6 +867,23 @@ app.get("/api/jackpot", async (_req, res) => {
 });
 
 require("./admin.js")(app, pool, sign, verify, { sendTransfer: sendTransfer });
+
+/* Where each payout stands, for the player's own screen. */
+app.get("/api/withdrawals", auth, async (req, res) => {
+  const r = await pool.query(
+    `SELECT kind, amount, status, phone, bank, created
+     FROM tx WHERE user_id=$1 AND kind IN ('withdraw','pesalink')
+     ORDER BY id DESC LIMIT 10`, [req.user.id]);
+  const label = st => st === "success" ? "Paid"
+    : st === "failed" ? "Failed — refunded"
+    : st === "review" ? "Under review"
+    : "Pending";
+  res.json(r.rows.map(x => ({
+    amount: Number(x.amount), status: x.status, label: label(x.status),
+    method: x.kind === "pesalink" ? "Bank (PesaLink)" : "M-Pesa",
+    at: Number(x.created),
+  })));
+});
 
 app.get("/api/history", auth, async (req, res) => {
   const spins = await pool.query(

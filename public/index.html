@@ -27,6 +27,24 @@
     padding-bottom:calc(70px + env(safe-area-inset-bottom));
     overflow:hidden;
   }
+  /* --- very small phones: tighten everything so nothing is cut off --- */
+  @media (max-width:360px){
+    .bets{gap:4px;padding:0 8px}
+    .bet small{font-size:6px}
+    .chips{gap:4px}
+    .chip{width:46px;font-size:12px}
+    .bar{padding:6px 8px calc(6px + env(safe-area-inset-bottom));gap:6px}
+    .bar button{font-size:12px;padding:9px 0}
+    .boards{padding:3px 8px;gap:6px}
+    header{padding:6px 8px 2px}
+  }
+  /* --- short screens (landscape phones): shrink the wheel, not the controls --- */
+  @media (max-height:640px){
+    .wheel-wrap{width:min(52vw,min(190px,34vh))}
+    .hub .num{font-size:clamp(18px,5vw,26px)}
+    #winnersBar{display:none !important}
+  }
+  /* --- tablets and up: a little more breathing room --- */
   @media (min-width:520px){
     body{background:
       radial-gradient(80% 50% at 50% 0%, #3a0a0c 0%, #14090a 60%, #0a0405 100%);
@@ -34,6 +52,8 @@
     #app{min-height:auto;border-radius:20px;
       box-shadow:0 24px 70px rgba(0,0,0,.75), 0 0 0 1px rgba(243,196,64,.18);
       padding-bottom:18px}
+    .wheel-wrap{width:min(88%,360px)}
+    .bets{max-width:none}
     .bar{position:sticky;border-radius:0 0 20px 20px}
     .sheet{position:absolute}
   }
@@ -136,7 +156,7 @@
   @media (min-width:520px){ .sheet{place-items:center} .card{border-radius:16px;max-width:420px} }
   .sheet.open{display:grid}
   .card{background:#1d0e0e;border:2px solid var(--gold);border-radius:18px 18px 0 0;width:100%;
-        max-width:480px;padding:16px 16px calc(16px + env(safe-area-inset-bottom));max-height:92dvh;overflow-y:auto}
+        max-width:480px;padding:16px 16px calc(16px + env(safe-area-inset-bottom));max-height:88dvh;overflow-y:auto;-webkit-overflow-scrolling:touch}
   .card h2{font-family:'Russo One';color:var(--gold);font-size:16px;margin-bottom:12px}
   .card label{font-size:11px;color:#e6c9c9;display:block;margin:7px 0 3px}
   .card input,.card select{width:100%;padding:10px;border-radius:10px;border:1.5px solid #5a4a1c;
@@ -277,7 +297,7 @@
 <div class="sheet" id="depositSheet"><div class="card">
   <h2>Deposit via M-Pesa</h2>
   <label>M-Pesa number</label><input id="depPhone" inputmode="tel" placeholder="07XX XXX XXX">
-  <label>Amount (KSh 100 – 100,000)</label><input id="depAmount" type="number" min="100" max="100000" step="50" value="200">
+  <label id="depLimits">Amount</label><input id="depAmount" type="number" min="20" max="100000" step="10" value="100">
   <div class="err" id="depErr"></div>
   <p class="rg" id="paybillNote" style="text-align:left;margin-top:10px"></p>
   <div style="display:flex;gap:8px;margin-top:10px">
@@ -293,6 +313,7 @@
   <p class="rg" style="text-align:left;margin-top:6px">Max 3 withdrawals per day. Above KSh 70,000 use PesaLink bank transfer.</p>
   <p class="rg" style="text-align:left" id="wdDest"></p>
   <div class="err" id="wdErr"></div>
+  <div id="wdList" style="margin-top:10px"></div>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button id="wdGo">Send to M-Pesa</button>
     <button class="ghost" id="wdCancel">Cancel</button>
@@ -639,6 +660,11 @@ function showPaybill(id){
 }
 function applyAccount(me){
   myPhone = me.phone || "";
+  const lo = me.min_deposit || 20, hi = me.max_deposit || 100000;
+  $("depLimits").textContent = "Amount (KSh " + lo.toLocaleString() + " \u2013 " + hi.toLocaleString() + ")";
+  const da = $("depAmount");
+  da.min = lo; da.max = hi;
+  if(Number(da.value) < lo) da.value = lo;
   $("depPhone").value = me.phone ? "0"+me.phone.slice(3) : "";
   const local = myPhone ? "0"+myPhone.slice(3) : "";
   if(me.wht>0) $("wdDest").dataset.wht=me.wht;
@@ -758,25 +784,58 @@ $("moveBtn").onclick = async ()=>{
   finally{ btn.disabled = false; }
 };
 
-$("withdrawBtn").onclick = ()=>{ $("wdErr").textContent=""; open_("withdrawSheet"); };
+$("withdrawBtn").onclick = ()=>{ $("wdErr").textContent=""; open_("withdrawSheet"); loadWithdrawals(); };
 $("wdCancel").onclick=()=>close_("withdrawSheet");
+let wdBusy = false;
 $("wdGo").onclick = async ()=>{
+  if(wdBusy) return;                        // a second tap used to race the first
   const amt=Number($("wdAmount").value);
   if(amt>70000){ close_("withdrawSheet"); $("plAmount").value=amt; open_("plSheet"); return; }
+  wdBusy = true;
+  const btn = $("wdGo"); btn.disabled = true; btn.textContent = "Sending\u2026";
+  $("wdErr").textContent = "";
   try{
     const d = await api("withdraw",{amount:amt});
-    setBalance(d.balance); setWinnings(d.winnings); close_("withdrawSheet");
-    $("hubMsg").textContent=d.message; sfx.win();
+    setBalance(d.balance); setWinnings(d.winnings);
+    $("wdAmount").value = "";
+    $("wdErr").textContent = d.message;
+    await loadWithdrawals();
+    sfx.win();
   }catch(e){ $("wdErr").textContent=e.message; sfx.error(); }
+  finally{ wdBusy = false; btn.disabled = false; btn.textContent = "Send to M-Pesa"; }
 };
+
+/* Payout history so a player can see a transfer is still in flight rather
+   than assuming it failed and trying again. */
+async function loadWithdrawals(){
+  try{
+    const list = await api("withdrawals");
+    if(!list.length){ $("wdList").innerHTML = ""; return; }
+    const colour = s => s==="success" ? "#3fb950" : s==="failed" ? "#ff8a80" : "#f3c440";
+    $("wdList").innerHTML =
+      '<div style="font-size:11px;color:#caa;margin-bottom:4px">Recent payouts</div>' +
+      list.slice(0,5).map(w =>
+        '<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;'+
+        'padding:5px 0;border-bottom:1px solid #3a2a2a">'+
+          '<span>KSh '+(w.amount/100).toLocaleString()+'<br>'+
+            '<span style="font-size:10px;color:#a98">'+w.method+' \u00B7 '+
+            new Date(w.at).toLocaleDateString()+'</span></span>'+
+          '<b style="color:'+colour(w.status)+';white-space:nowrap">'+w.label+'</b>'+
+        '</div>').join("");
+  }catch(e){ $("wdList").innerHTML = ""; }
+}
 $("plCancel").onclick=()=>close_("plSheet");
+let plBusy = false;
 $("plGo").onclick = async ()=>{
+  if(plBusy) return;
+  plBusy = true; const pb = $("plGo"); pb.disabled = true; pb.textContent = "Sending\u2026";
   try{
     const d = await api("withdraw/pesalink",{amount:Number($("plAmount").value),
       bank:$("plBank").value, account:$("plAcct").value});
     setBalance(d.balance); setWinnings(d.winnings); close_("plSheet");
     $("hubMsg").textContent=d.message; sfx.win();
   }catch(e){ $("plErr").textContent=e.message; sfx.error(); }
+  finally{ plBusy = false; $("plGo").disabled = false; $("plGo").textContent = "Request transfer"; }
 };
 
 /* ---- diamond bonus: pick 3 of 9 ---- */
