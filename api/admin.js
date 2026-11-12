@@ -217,7 +217,7 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
 
   /* ----- dashboard stats ----- */
   app.get(`${P}/stats`, adminAuth, async (_req, res) => {
-    const [users, dep, wd, daily, jack, st, pend, taxq, plq, expDaily, expAll] = await Promise.all([
+    const [users, dep, wd, daily, jack, st, pend, heldWd, heldDep, taxq, plq, expDaily, expAll] = await Promise.all([
       pool.query(`SELECT COUNT(*) c, COALESCE(SUM(balance),0)+COALESCE(SUM(winnings),0) bal,
                          COALESCE(SUM(balance),0) credit, COALESCE(SUM(winnings),0) winnings FROM users`),
       pool.query("SELECT COALESCE(SUM(amount),0) s, COUNT(*) c FROM tx WHERE kind='deposit' AND status='success'"),
@@ -227,7 +227,9 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
         FROM spins WHERE demo=false GROUP BY d ORDER BY d DESC LIMIT 14`),
       pool.query("SELECT pool FROM jackpot WHERE id=1"),
       pool.query("SELECT key,value FROM settings"),
-      pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='withdraw' AND status IN ('pending','sending')"),
+      pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='withdraw' AND status IN ('pending','sending','review')"),
+      pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='withdraw' AND status='review'"),
+      pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='deposit' AND status='review'"),
       pool.query("SELECT COALESCE(SUM(tax),0) t FROM spins WHERE demo=false"),
       pool.query("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM tx WHERE kind='pesalink' AND status='requested'"),
       pool.query(`SELECT to_char(to_timestamp(created/1000),'YYYY-MM-DD') d, COALESCE(SUM(amount),0) s
@@ -244,6 +246,9 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
       deposits: { total: Number(dep.rows[0].s), count: Number(dep.rows[0].c) },
       withdrawals: { total: Number(wd.rows[0].s), count: Number(wd.rows[0].c) },
       pending_withdrawals: { count: Number(pend.rows[0].c), total: Number(pend.rows[0].s) },
+      /* waiting on a person, as opposed to waiting on Safaricom */
+      held_withdrawals: { count: Number(heldWd.rows[0].c), total: Number(heldWd.rows[0].s) },
+      held_deposits: { count: Number(heldDep.rows[0].c), total: Number(heldDep.rows[0].s) },
       daily: (function () {
         const spend = {}; expDaily.rows.forEach(r => spend[r.d] = Number(r.s));
         return daily.rows.map(r => {
@@ -290,7 +295,7 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
 
   /* ----- switches ----- */
   const BOOL_KEYS = ["live_mode", "withdrawals_enabled", "wht_enabled"];
-  const NUM_KEYS = ["wht_rate", "wht_threshold", "excise_rate", "betting_tax_rate", "corp_tax_rate", "target_rtp", "target_net", "min_deposit", "max_deposit"];
+  const NUM_KEYS = ["wht_rate", "wht_threshold", "excise_rate", "betting_tax_rate", "corp_tax_rate", "target_rtp", "target_net", "min_deposit", "max_deposit", "demo_rtp", "kyc_review_limit"];
 
   app.post(`${P}/settings`, adminAuth, async (req, res) => {
     for (const k of BOOL_KEYS) {
@@ -301,6 +306,10 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
       if (k in (req.body || {})) {
         const v = Number(req.body[k]);
         if (!(v >= 0)) return res.status(400).json({ error: "Rates must be zero or higher." });
+        if (k === "demo_rtp" && (v < 8 || v > 160))
+          return res.status(400).json({ error: "Demo payout rate must be between 8 and 160%." });
+        if (k === "kyc_review_limit" && (v < 0 || v > 1000000))
+          return res.status(400).json({ error: "Review limit must be between 0 and 1,000,000." });
         if (k === "target_rtp" && (v < 8 || v > 90))
           return res.status(400).json({ error: "Payout rate must be between 8% and 90%." });
         const prev = (await pool.query("SELECT value FROM settings WHERE key=$1", [k])).rows[0];
@@ -391,12 +400,61 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
   app.get(`${P}/payouts`, adminAuth, async (_req, res) => {
     const r = await pool.query(
       `SELECT t.id, t.user_id, t.amount, t.ref, t.status, t.phone, t.created,
-              u.full_name, u.id_number
+              t.note, t.payer_name,
+              u.full_name, u.id_number, u.mpesa_name, u.name_verified, u.name_mismatch
        FROM tx t JOIN users u ON u.id=t.user_id
        WHERE t.kind='withdraw'
-       ORDER BY (t.status IN ('sending','pending')) DESC, t.id DESC LIMIT 60`);
+       ORDER BY (t.status='review') DESC,
+                (t.status IN ('sending','pending')) DESC, t.id DESC LIMIT 60`);
     res.json(r.rows.map(x => ({ ...x, amount: Number(x.amount) })));
   });
+
+  /* ----- deposits held because the number or the name did not match ----- */
+  app.get(`${P}/deposits/held`, adminAuth, wrap(async (_req, res) => {
+    const r = await pool.query(
+      `SELECT t.id, t.user_id, t.amount, t.ref, t.phone, t.payer_name, t.note, t.created,
+              u.full_name, u.phone AS registered, u.id_number
+       FROM tx t JOIN users u ON u.id=t.user_id
+       WHERE t.kind='deposit' AND t.status='review'
+       ORDER BY t.id DESC LIMIT 60`);
+    res.json(r.rows.map(x => ({ ...x, amount: Number(x.amount) })));
+  }));
+
+  /* Releasing credits the player. Rejecting only closes the record: the money
+   * is already in your paybill, so returning it is an M-Pesa reversal you do
+   * yourself. */
+  app.post(`${P}/deposits/:ref`, adminAuth, wrap(async (req, res) => {
+    const action = String(req.body.action || "");
+    const t = (await pool.query(
+      "SELECT * FROM tx WHERE ref=$1 AND kind='deposit'", [req.params.ref])).rows[0];
+    if (!t) return res.status(404).json({ error: "Deposit not found." });
+    if (t.status !== "review")
+      return res.status(400).json({ error: "That deposit has already been settled." });
+
+    if (action === "release") {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const upd = await client.query(
+          "UPDATE tx SET status='success' WHERE id=$1 AND status='review'", [t.id]);
+        if (!upd.rowCount) throw new Error("already");
+        await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1",
+          [t.user_id, Number(t.amount)]);
+        await client.query("COMMIT");
+      } catch (e) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Already settled." });
+      } finally { client.release(); }
+      return res.json({ ok: true, message: "Credited to the player." });
+    }
+
+    if (action === "reject") {
+      await pool.query("UPDATE tx SET status='failed' WHERE id=$1 AND status='review'", [t.id]);
+      return res.json({ ok: true,
+        message: "Marked rejected. Reverse the M-Pesa payment yourself if you are returning it." });
+    }
+    res.status(400).json({ error: "Unknown action." });
+  }));
 
   /* Manual settlement. "paid" is for money you sent by hand (or that Safaricom
    * delivered without a callback reaching us); "refund" returns it to the
@@ -412,6 +470,25 @@ module.exports = function mountAdmin(app, pool, sign, verify, payouts) {
     if (action === "paid") {
       await pool.query("UPDATE tx SET status='success' WHERE id=$1", [t.id]);
       return res.json({ ok: true, message: "Marked paid." });
+    }
+
+    /* Releasing a payout that was held for review. The player's wallet was
+       already debited when they asked, so this only sends the money. */
+    if (action === "approve") {
+      if (t.status !== "review")
+        return res.status(400).json({ error: "That payout is not waiting for approval." });
+      if (!payouts || !payouts.sendTransfer)
+        return res.status(500).json({ error: "Payout helper unavailable." });
+      const u = (await pool.query("SELECT full_name FROM users WHERE id=$1", [t.user_id])).rows[0];
+      await pool.query("UPDATE tx SET status='sending' WHERE id=$1", [t.id]);
+      const out = await payouts.sendTransfer({
+        name: u && u.full_name, phone: t.phone, cents: Number(t.amount), ref: t.ref });
+      if (!out.ok) {
+        await pool.query("UPDATE tx SET status='review' WHERE id=$1", [t.id]);
+        return res.status(502).json({ error: out.error });
+      }
+      await pool.query("UPDATE tx SET status='pending' WHERE id=$1", [t.id]);
+      return res.json({ ok: true, message: "Approved and sent." });
     }
 
     if (action === "refund") {
@@ -653,6 +730,8 @@ td.trunc{max-width:210px;overflow:hidden;text-overflow:ellipsis}
 .scroll{position:relative}
 .pos{color:var(--up)}.neg{color:var(--down)}
 .empty{padding:26px 18px;color:var(--faint);font-size:13px;text-align:center}
+td .sub{color:var(--warn);font-size:11.5px;white-space:normal;max-width:34ch;margin-top:3px}
+td.why{color:var(--warn);font-size:12px;white-space:normal;max-width:30ch;min-width:18ch}
 
 /* ---- status pills in tables ---- */
 .st{font-size:11.5px;padding:2px 8px;border-radius:3px;border:1px solid var(--line2);
@@ -772,6 +851,7 @@ pre#diagOut{display:none;white-space:pre-wrap;word-break:break-word;font-size:11
           <div><dt>Withholding tax owed to KRA</dt><dd id="fWht">&mdash;</dd></div>
           <div><dt>M-Pesa payouts in flight</dt><dd id="fPend">&mdash;</dd></div>
           <div><dt>PesaLink requests</dt><dd id="fPl">&mdash;</dd></div>
+          <div><dt>Held for your approval</dt><dd id="fHeld">&mdash;</dd></div>
           <div><dt>Marketing &amp; expenses</dt><dd id="fExp">&mdash;</dd></div>
         </dl>
       </article>
@@ -810,6 +890,21 @@ pre#diagOut{display:none;white-space:pre-wrap;word-break:break-word;font-size:11
         <b>Retry</b> to send again, or <b>Refund</b> to return the money to the player's wallet.
         A payout that failed because the B2C float was empty can simply be retried once the
         paybill is topped up.</p>
+      </div>
+    </section>
+
+    <section class="blk">
+      <header><h2>Deposits held</h2><span class="sp"></span>
+        <span class="out">Paid from the wrong number, or under a different name</span></header>
+      <div class="scroll"><table id="heldDep" class="resp"><thead><tr>
+        <th>Ref</th><th>Account</th><th>Paid from</th><th>M-Pesa name</th>
+        <th class="num">Amount</th><th>Why</th><th>When</th><th></th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="body" style="border-top:1px solid var(--line)">
+        <p class="note" style="margin:0">This money is in your paybill but has not been credited.
+        <b>Release</b> only if you are satisfied the payer is the account holder &mdash; a
+        relative&rsquo;s phone, say. <b>Reject</b> closes the record; reversing the M-Pesa payment
+        is something you do from your own M-Pesa portal.</p>
       </div>
     </section>
 
@@ -865,6 +960,17 @@ pre#diagOut{display:none;white-space:pre-wrap;word-break:break-word;font-size:11
         <p class="note">Takes effect on the next spin. All bet types stay at the same RTP, so no
         symbol is a better deal than another. Every change is timestamped in the change log &mdash;
         BCLB audits declared payout rates, so keep this matching your licence.</p>
+        <div class="row" style="border-top:1px solid var(--line);padding-top:14px;margin-top:16px">
+          <label class="f" style="max-width:190px">Demo payout rate %
+            <input id="demoRtp" type="number" step="5" min="8" max="160"></label>
+          <button id="demoSave">Apply to demo</button>
+          <span id="demoOut" class="out"></span>
+        </div>
+        <p class="note">Demo money is not real, so this can be set far above the live rate to let
+        new players win often enough to learn the game. Above 100% a demo balance grows as they
+        play. <b>Keep in mind:</b> a demo that pays noticeably better than the live game is treated
+        as misleading advertising by most regulators, BCLB included. Check this against your
+        licence conditions before you launch.</p>
         <div class="scroll" id="auditWrap" style="display:none;margin-top:14px;border:1px solid var(--line)">
           <table id="audit" class="resp"><thead><tr>
             <th>When</th><th>Setting</th><th>From</th><th>To</th>
@@ -904,6 +1010,23 @@ pre#diagOut{display:none;white-space:pre-wrap;word-break:break-word;font-size:11
           <button id="depSave" class="on">Save limits</button>
           <span id="depOut" class="out"></span>
         </div>
+      </div>
+    </section>
+
+    <section class="blk">
+      <header><h2>Identity checks</h2></header>
+      <div class="body">
+        <div class="row">
+          <label class="f" style="max-width:220px">Send payouts automatically up to KSh
+            <input id="kycLimit" type="number" min="0" step="1000"></label>
+          <button id="kycSave" class="on">Save limit</button>
+          <span id="kycOut" class="out"></span>
+        </div>
+        <p class="note">Deposits are only accepted from the M-Pesa number registered on the
+        account, and the M-Pesa name must match the name the player signed up with. A payment that
+        fails either check is held, not credited, and appears in the payouts tab for you to settle
+        or return. Withdrawals go only to that same number; anything above this limit, and any
+        account whose name has not matched, waits here for you to approve.</p>
       </div>
     </section>
 
@@ -1094,7 +1217,7 @@ function logout(msg){
     if(t && t.tBodies && t.tBodies[0]) t.tBodies[0].innerHTML = "";
   });
   ["fToday","fTodaySub","fSpins","fStaked","fPaid","fMargin","fCredit","fWinnings",
-   "fLiab","fJackpot","fWht","fPend","fPl","fExp","fPlayers","fDep","fWd","fCash"]
+   "fLiab","fJackpot","fWht","fPend","fPl","fHeld","fExp","fPlayers","fDep","fWd","fCash"]
     .forEach(function(id){ var e=document.getElementById(id); if(e) e.textContent="—"; });
   const nt = document.getElementById("notices"); if(nt) nt.innerHTML = "";
   document.getElementById("login").style.display = "block";
@@ -1120,7 +1243,7 @@ async function show(){
     }
   }catch(e){}
   await refresh();
-  await Promise.all([loadPlayers(),loadTx(),loadPesalink(),loadExpenses(),loadPayouts()]);
+  await Promise.all([loadPlayers(),loadTx(),loadPesalink(),loadExpenses(),loadPayouts(),loadHeldDeposits()]);
   labelAll();
 }
 
@@ -1152,8 +1275,11 @@ async function refresh(){
   put("fJackpot",K(s.jackpot_pool));
 
   put("fWht",K(s.wht_collected));
-  put("fPend",s.pending_withdrawals.count+" · "+K(s.pending_withdrawals.total),
+  put("fPend",s.pending_withdrawals.count+" \u00b7 "+K(s.pending_withdrawals.total),
       s.pending_withdrawals.count?"neg":"");
+  var hw=s.held_withdrawals||{count:0,total:0}, hd=s.held_deposits||{count:0,total:0};
+  put("fHeld",(hw.count+hd.count)+" \u00b7 "+K(hw.total+hd.total),
+      (hw.count+hd.count)?"neg":"");
   put("fPl",s.pesalink_pending.count+" · "+K(s.pesalink_pending.total),
       s.pesalink_pending.count?"neg":"");
   put("fExp",K(s.expenses_total));
@@ -1163,7 +1289,8 @@ async function refresh(){
   put("fWd",K(s.withdrawals.total));
   put("fCash",K(s.deposits.total-s.withdrawals.total));
 
-  var pendN=s.pending_withdrawals.count+s.pesalink_pending.count;
+  var pendN=s.pending_withdrawals.count+s.pesalink_pending.count+
+            ((s.held_deposits&&s.held_deposits.count)||0);
   var nPay=document.getElementById("nPay");
   if(nPay){ nPay.textContent=pendN; nPay.className="n"+(pendN?" show":""); }
 
@@ -1200,6 +1327,10 @@ async function refresh(){
   document.getElementById("ctRate").value=S.corp_tax_rate;
   var rtpEl=document.getElementById("rtpInput");
   if(document.activeElement!==rtpEl) rtpEl.value=S.target_rtp;
+  var dEl=document.getElementById("demoRtp");
+  if(document.activeElement!==dEl) dEl.value=S.demo_rtp==null?150:S.demo_rtp;
+  var kEl=document.getElementById("kycLimit");
+  if(document.activeElement!==kEl) kEl.value=S.kyc_review_limit==null?20000:S.kyc_review_limit;
   var netEl=document.getElementById("netTarget");
   if(document.activeElement!==netEl) netEl.value=S.target_net;
   /* Gross margin alone is not the signal: excise is charged on stakes, so a
@@ -1317,12 +1448,17 @@ async function loadPayouts(){
   var p=await api("/payouts");
   document.getElementById("payouts").tBodies[0].innerHTML=p.map(function(x){
     var act = x.status==="success" ? "" :
-      '<button class="pobtn sm on" data-ref="'+x.ref+'" data-a="paid">Mark paid</button> '+
-      '<button class="pobtn sm" data-ref="'+x.ref+'" data-a="retry">Retry</button> '+
+      (x.status==="review"
+        ? '<button class="pobtn sm on" data-ref="'+x.ref+'" data-a="approve">Approve &amp; send</button> '
+        : '<button class="pobtn sm on" data-ref="'+x.ref+'" data-a="paid">Mark paid</button> '+
+          '<button class="pobtn sm" data-ref="'+x.ref+'" data-a="retry">Retry</button> ')+
       '<button class="pobtn sm danger" data-ref="'+x.ref+'" data-a="refund">Refund</button>';
     return "<tr>"+
       '<td data-l="Ref">'+x.ref.slice(0,10)+"</td>"+
-      '<td data-l="Player">'+(x.full_name||"\u2014")+"</td>"+
+      '<td data-l="Player">'+(x.full_name||"\u2014")+
+        (x.name_mismatch?' <span class="st bad">name mismatch</span>':
+         x.name_verified?' <span class="st ok">name \u2713</span>':'')+
+        (x.note?'<div class="sub">'+x.note+"</div>":"")+"</td>"+
       '<td data-l="Phone">'+(x.phone?"0"+String(x.phone).slice(3):"\u2014")+"</td>"+
       '<td data-l="Amount" class="num">'+K(x.amount)+"</td>"+
       '<td data-l="Status">'+ST(x.status)+"</td>"+
@@ -1361,6 +1497,34 @@ async function loadPesalink(){
       if(b.dataset.a==="reject"&&!confirm("Reject and refund this request?"))return;
       await api("/pesalink/"+b.dataset.ref,{action:b.dataset.a});
       loadPesalink();refresh();
+    };
+  });
+}
+
+async function loadHeldDeposits(){
+  var d=await api("/deposits/held");
+  document.getElementById("heldDep").tBodies[0].innerHTML=d.map(function(x){
+    var from=x.phone?"0"+String(x.phone).slice(3):"\u2014";
+    var reg=x.registered?"0"+String(x.registered).slice(3):"\u2014";
+    return '<tr><td class="ref">'+String(x.ref).slice(0,12)+"</td>"+
+      "<td>"+(x.full_name||"\u2014")+'<div class="sub" style="color:var(--faint)">'+reg+"</div></td>"+
+      "<td>"+from+"</td><td>"+(x.payer_name||"\u2014")+"</td>"+
+      '<td class="num">'+K(x.amount)+"</td>"+
+      '<td class="why">'+(x.note||"held")+"</td>"+
+      "<td>"+new Date(Number(x.created)).toLocaleString()+"</td>"+
+      '<td><button class="hdbtn sm on" data-ref="'+x.ref+'" data-a="release">Release</button> '+
+      '<button class="hdbtn sm danger" data-ref="'+x.ref+'" data-a="reject">Reject</button></td></tr>';
+  }).join("") || EMPTY(8,"Nothing held. Deposits from the registered number credit automatically.");
+  labelCells("heldDep");
+  document.querySelectorAll(".hdbtn").forEach(function(b){
+    b.onclick=async function(){
+      var rel=b.dataset.a==="release";
+      if(!confirm(rel
+        ? "Credit this deposit to the player?\\n\\nOnly do this if you are satisfied the payer is the account holder."
+        : "Reject this deposit?\\n\\nThe player is not credited. Reversing the M-Pesa payment is separate."))return;
+      try{ var r=await api("/deposits/"+b.dataset.ref,{action:b.dataset.a});
+        alert(r.message); }catch(e){ alert(e.message); }
+      loadHeldDeposits();refresh();
     };
   });
 }
@@ -1460,6 +1624,26 @@ document.getElementById("depSave").onclick=async function(){
   try{ await api("/settings",{min_deposit:mn,max_deposit:mx});
     document.getElementById("depOut").textContent="Saved."; refresh();
   }catch(e){ document.getElementById("depOut").textContent=e.message; }
+};
+
+document.getElementById("demoSave").onclick=async function(){
+  var v=Number(document.getElementById("demoRtp").value);
+  var out=document.getElementById("demoOut");
+  if(!(v>=8&&v<=160)){ out.textContent="Enter 8 to 160."; return; }
+  if(v>Number(S.target_rtp)+25 &&
+     !confirm("Set the demo to "+v+"% while the live game pays "+S.target_rtp+"%?\\n\\n"+
+              "A demo that pays much better than the real game can be treated as misleading "+
+              "advertising. Make sure your licence allows this gap."))return;
+  try{ await api("/settings",{demo_rtp:v}); out.textContent="Saved."; refresh(); loadAudit(); }
+  catch(e){ out.textContent=e.message; }
+};
+
+document.getElementById("kycSave").onclick=async function(){
+  var v=Number(document.getElementById("kycLimit").value);
+  var out=document.getElementById("kycOut");
+  if(!(v>=0)){ out.textContent="Enter an amount."; return; }
+  try{ await api("/settings",{kyc_review_limit:v}); out.textContent="Saved."; refresh(); }
+  catch(e){ out.textContent=e.message; }
 };
 
 document.getElementById("rtpSave").onclick=saveRtp;

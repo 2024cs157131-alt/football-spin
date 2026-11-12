@@ -213,6 +213,8 @@
   .card label{font-size:11px;color:#e6c9c9;display:block;margin:7px 0 3px}
   .card input,.card select{width:100%;padding:10px;border-radius:10px;border:1.5px solid #5a4a1c;
         background:#0e0606;color:var(--ink);font-size:15px}
+  /* A field the player cannot change should not look like one they can. */
+  .card input[readonly]{background:#1a1010;color:#c9b38a;border-style:dashed;cursor:default}
   .card .err{color:#ff8a80;font-size:13px;min-height:16px;margin-top:8px}
   .rg{font-size:11px;color:#caa;text-align:center;margin-top:14px;line-height:1.5}
   .rg a{color:var(--gold)}
@@ -337,7 +339,10 @@
 <!-- deposit sheet -->
 <div class="sheet" id="depositSheet"><div class="card">
   <h2>Deposit via M-Pesa</h2>
-  <label>M-Pesa number</label><input id="depPhone" inputmode="tel" placeholder="07XX XXX XXX">
+  <label>M-Pesa number</label>
+  <input id="depPhone" inputmode="tel" readonly aria-readonly="true"
+         title="Deposits must come from your registered number">
+  <p class="rg" id="depPhoneNote" style="text-align:left;margin:-4px 0 8px"></p>
   <label id="depLimits">Amount</label><input id="depAmount" type="number" min="20" max="100000" step="10" value="100">
   <div class="err" id="depErr"></div>
   <p class="rg" id="paybillNote" style="text-align:left;margin-top:10px"></p>
@@ -785,6 +790,11 @@ function applyAccount(me){
   da.min = lo; da.max = hi;
   if(Number(da.value) < lo) da.value = lo;
   $("depPhone").value = me.phone ? "0"+me.phone.slice(3) : "";
+  /* Deposits are only accepted from this number, and the name on it must
+     match the name on the account, so there is nothing here to edit. */
+  $("depPhoneNote").textContent = me.phone
+    ? "Your registered number. Deposits from any other number are held, not credited."
+    : "No M-Pesa number on your account \u2014 contact support.";
   const local = myPhone ? "0"+myPhone.slice(3) : "";
   if(me.wht>0) $("wdDest").dataset.wht=me.wht;
   $("wdDest").textContent = me.phone_verified
@@ -876,7 +886,7 @@ $("depositBtn").onclick=()=>open_("depositSheet");
 $("depCancel").onclick=()=>close_("depositSheet");
 $("depGo").onclick = async ()=>{
   try{
-    const d = await api("deposit/init",{amount: Number($("depAmount").value), phone: $("depPhone").value});
+    const d = await api("deposit/init",{amount: Number($("depAmount").value)});
     $("depErr").textContent = d.message;   // "Check your phone and enter your M-Pesa PIN."
     const before = balance;
     const poll = setInterval(async ()=>{

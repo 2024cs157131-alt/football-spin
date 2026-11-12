@@ -59,7 +59,8 @@ async function init() {
          ('wht_enabled','true'),('wht_rate','20'),('wht_threshold','0'),
          ('excise_rate','15'),('betting_tax_rate','15'),('corp_tax_rate','30'),
          ('target_rtp','32'),('target_net','30'),
-         ('min_deposit','20'),('max_deposit','100000')
+         ('min_deposit','20'),('max_deposit','100000'),
+         ('demo_rtp','150'),('kyc_review_limit','20000')
         ON CONFLICT DO NOTHING`,
       `CREATE TABLE IF NOT EXISTS expenses(
         id SERIAL PRIMARY KEY, category TEXT, amount BIGINT, note TEXT, created BIGINT)`,
@@ -87,6 +88,11 @@ async function init() {
       `ALTER TABLE tx ADD COLUMN IF NOT EXISTS alt BOOLEAN DEFAULT false`,
       `ALTER TABLE tx ADD COLUMN IF NOT EXISTS from_win BIGINT DEFAULT 0`,
       `ALTER TABLE tx ADD COLUMN IF NOT EXISTS from_bal BIGINT DEFAULT 0`,
+      `ALTER TABLE tx ADD COLUMN IF NOT EXISTS note TEXT`,
+      `ALTER TABLE tx ADD COLUMN IF NOT EXISTS payer_name TEXT`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS mpesa_name TEXT`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS name_verified BOOLEAN DEFAULT false`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS name_mismatch BOOLEAN DEFAULT false`,
     ];
     for (const sql of statements) await pool.query(sql);
   })().catch((e) => { ready = null; throw e; });
@@ -124,6 +130,67 @@ async function auth(req, res, next) {
   req.user = r.rows[0]; req.user.balance = Number(req.user.balance);
   next();
 }
+/* ---------- matching an M-Pesa name to the registered name ----------
+ * M-Pesa returns the name on the SIM registration, which rarely matches what
+ * someone typed at signup: the order differs ("LANGAT VICTOR" vs "Victor
+ * Langat"), a middle name appears on one side only, and spellings drift.
+ * Demanding an exact string would lock out most honest players, so this
+ * compares name parts and asks for enough overlap to identify the person.
+ */
+function nameParts(raw) {
+  return String(raw || "")
+    .toUpperCase()
+    .replace(/[^A-Z\s]/g, " ")       // drop punctuation, digits, titles' dots
+    .split(/\s+/)
+    .filter(w => w.length > 1);      // single initials carry no signal
+}
+
+/* Levenshtein, capped: we only care whether two parts are within one or two
+ * edits, so there is no point computing a large distance exactly. */
+function editDistance(a, b) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1,
+                        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/* Two parts count as the same name if they are equal, within one edit for
+ * short names or two for long ones, or one is a prefix of the other at least
+ * four letters long (M-Pesa truncates some names). */
+function partsMatch(a, b) {
+  if (a === b) return true;
+  const tol = Math.min(a.length, b.length) >= 6 ? 2 : 1;
+  if (editDistance(a, b) <= tol) return true;
+  const short = a.length < b.length ? a : b, long = a.length < b.length ? b : a;
+  return short.length >= 4 && long.startsWith(short);
+}
+
+/* Returns { ok, matched, of } — ok when enough parts line up to be confident
+ * this is the same person. Two matching parts is the bar; where the shorter
+ * name has only one usable part, that one part must match. */
+function nameMatches(registered, mpesa) {
+  const A = nameParts(registered), B = nameParts(mpesa);
+  if (!A.length || !B.length) return { ok: false, matched: 0, of: 0, reason: "missing" };
+  const used = new Set();
+  let matched = 0;
+  for (const a of A) {
+    for (let i = 0; i < B.length; i++) {
+      if (used.has(i)) continue;
+      if (partsMatch(a, B[i])) { used.add(i); matched++; break; }
+    }
+  }
+  const need = Math.min(2, Math.min(A.length, B.length));
+  return { ok: matched >= need, matched, of: Math.min(A.length, B.length) };
+}
+
 const msisdn = raw => {
   const p = String(raw || "").replace(/\D/g, "").replace(/^0/, "254");
   return /^254(7|1)\d{8}$/.test(p) ? p : null;
@@ -250,11 +317,24 @@ const BONUS_EV = EXTRA_EV_EACH * (EXTRA_MIN + EXTRA_MAX) / 2;
 const SYMBOL_KEYS = new Set(
   ["star", "elephant", "rhino", "lion", "buffalo", "leopard", "giraffe", "zebra", "allprize"]);
 
-function buildOutcomes(targetRtpPct) {
-  const R = Math.min(90, Math.max(8, Number(targetRtpPct) || DEFAULT_RTP)) / 100;
+/* The wheel must always keep some losing slots, or there is nothing to lose
+ * on and the chase has no tension. This floor also stops a very generous
+ * demo rate from overflowing the weight pool. */
+const DIAMOND_MIN_W = 6000;
+const MAX_LIVE_RTP = 90;
+/* Demo money is not real, so demo may be set far more generous than the live
+ * game - up to the point where the wheel still has losing slots. */
+const MAX_DEMO_RTP = 160;
+
+function buildOutcomes(targetRtpPct, maxPct) {
+  const hi = Math.max(MAX_LIVE_RTP, Number(maxPct) || MAX_LIVE_RTP);
+  const R = Math.min(hi, Math.max(8, Number(targetRtpPct) || DEFAULT_RTP)) / 100;
   const pRespin = 1000 / POOL_W;
   const bonusRtp = (BONUS_W / POOL_W) * BONUS_EV;
-  const k = Math.max(0.05, (R * (1 - pRespin) - bonusRtp - JACKPOT_CUT) / BASE_DIRECT);
+  const specialW = BASE.filter(o => !o.scale).reduce((a, o) => a + o.w, 0);
+  const kMax = (POOL_W - DIAMOND_MIN_W - specialW) / SCALABLE_W;
+  const k = Math.min(kMax,
+    Math.max(0.05, (R * (1 - pRespin) - bonusRtp - JACKPOT_CUT) / BASE_DIRECT));
   const out = BASE.map(o => ({ key: o.key, odds: o.odds,
     w: o.scale ? Math.max(1, Math.round(o.w * k)) : o.w }));
   const used = out.reduce((s, o) => s + o.w, 0);
@@ -350,7 +430,17 @@ app.post("/api/deposit/init", auth, async (req, res) => {
   if (!st.live_mode) return res.status(403).json({ error: "Demo mode is on — deposits are paused." });
   if (req.user.suspended) return res.status(403).json({ error: "Account under review. Contact support." });
   const amountKes = Math.floor(Number(req.body.amount));
-  const phone = req.body.phone ? msisdn(req.body.phone) : req.user.phone;
+  /* The prompt goes to the number on the account and nowhere else. Accepting
+     a number from the request let one person fund another person's wallet,
+     which is the standard route for laundering a stolen M-Pesa PIN and also
+     breaks the "withdraw only to your own number" guarantee. */
+  const phone = req.user.phone;
+  const asked = req.body.phone ? msisdn(req.body.phone) : null;
+  if (asked && asked !== phone)
+    return res.status(400).json({
+      error: "Deposits must come from the M-Pesa number registered on this account ("
+             + (phone ? "0" + phone.slice(3) : "none on file")
+             + "). Contact support to change it." });
   const minDep = Number(st.min_deposit) || 20, maxDep = Number(st.max_deposit) || 100000;
   if (!amountKes || amountKes < minDep)
     return res.status(400).json({ error: `Minimum deposit is KSh ${minDep.toLocaleString()}.` });
@@ -439,9 +529,16 @@ app.post("/api/mpesa/c2b/validate/:token", async (req, res) => {
   const amt = Number((req.body || {}).TransAmount || 0);
   const cst = await getSettings();
   const cMin = Number(cst.min_deposit) || 20, cMax = Number(cst.max_deposit) || 100000;
-  const u = userId ? (await pool.query("SELECT id FROM users WHERE id=$1", [userId])).rows[0] : null;
+  const u = userId
+    ? (await pool.query("SELECT id, phone FROM users WHERE id=$1", [userId])).rows[0]
+    : null;
   if (!u) return res.json({ ResultCode: "C2B00012", ResultDesc: "Rejected" });
   if (amt < cMin || amt > cMax) return res.json({ ResultCode: "C2B00013", ResultDesc: "Rejected" });
+  /* Turn the payment away at the till rather than take it and argue later.
+     C2B00011 is Safaricom's "invalid MSISDN" rejection. */
+  const payer = msisdn((req.body || {}).MSISDN);
+  if (u.phone && payer && payer !== u.phone)
+    return res.json({ ResultCode: "C2B00011", ResultDesc: "Rejected" });
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
@@ -451,21 +548,46 @@ app.post("/api/mpesa/c2b/confirm/:token", async (req, res) => {
   const userId = parseInt(String(b.BillRefNumber || "").replace(/\D/g, ""), 10);
   const cents = Math.round(Number(b.TransAmount) * 100);
   if (userId && cents > 0 && b.TransID) {
-    const u = (await pool.query("SELECT id FROM users WHERE id=$1", [userId])).rows[0];
+    const u = (await pool.query(
+      "SELECT id, phone, full_name, name_verified FROM users WHERE id=$1", [userId])).rows[0];
     if (u) {
+      /* External validation has to be switched on by Safaricom and is not
+         always live, so the same checks are repeated here, where the money has
+         already arrived. A payment that fails them is recorded and held for
+         the operator rather than credited or silently swallowed. */
+      const payer = msisdn(b.MSISDN);
+      const payerName = [b.FirstName, b.MiddleName, b.LastName]
+        .filter(Boolean).join(" ").trim();
+      const nm = nameMatches(u.full_name, payerName);
+
+      let hold = null;
+      if (u.phone && payer && payer !== u.phone)
+        hold = "Paid from 0" + payer.slice(3) + ", not the number on the account.";
+      else if (payerName && u.full_name && !nm.ok)
+        hold = "M-Pesa name \"" + payerName + "\" does not match \"" + u.full_name + "\".";
+
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
         const ins = await client.query(
-          `INSERT INTO tx(user_id,kind,amount,ref,status,phone,created)
-           VALUES($1,'deposit',$2,$3,'success',$4,$5) ON CONFLICT (ref) DO NOTHING`,
-          [userId, cents, b.TransID, String(b.MSISDN || ""), Date.now()]);
-        if (ins.rowCount) {                    // idempotent on Safaricom's TransID
+          `INSERT INTO tx(user_id,kind,amount,ref,status,phone,payer_name,note,created)
+           VALUES($1,'deposit',$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (ref) DO NOTHING`,
+          [userId, cents, b.TransID, hold ? "review" : "success",
+           String(b.MSISDN || ""), payerName || null, hold, Date.now()]);
+        if (ins.rowCount && !hold) {           // idempotent on Safaricom's TransID
           await client.query("UPDATE users SET balance=balance+$2 WHERE id=$1", [userId, cents]);
-          const payer = msisdn(b.MSISDN);
           if (payer) await client.query(
             "UPDATE users SET phone_verified=true WHERE id=$1 AND phone=$2 AND phone_verified=false",
             [userId, payer]);
+          /* The paybill is the only place the real M-Pesa name is visible, so
+             this is where a player's name gets confirmed for good. */
+          if (payerName && nm.ok) await client.query(
+            "UPDATE users SET mpesa_name=$2, name_verified=true, name_mismatch=false WHERE id=$1",
+            [userId, payerName]);
+        } else if (ins.rowCount && payerName) {
+          await client.query(
+            "UPDATE users SET mpesa_name=COALESCE(mpesa_name,$2), name_mismatch=true WHERE id=$1",
+            [userId, payerName]);
         }
         await client.query("COMMIT");
       } catch (e) { await client.query("ROLLBACK"); } finally { client.release(); }
@@ -560,6 +682,27 @@ app.post("/api/mpesa/b2c/:token", async (req, res) => {
       "SELECT * FROM tx WHERE ref=$1 AND kind='withdraw'", [ref])).rows[0];
     if (t && (t.status === "pending" || t.status === "sending")) {
       if (rslt.ResultCode === 0) {
+        /* The payout result carries the name M-Pesa holds for the receiving
+           number. This is the one place a withdrawal can confirm, or
+           contradict, the name the player registered with. */
+        const params = (rslt.ResultParameters && rslt.ResultParameters.ResultParameter) || [];
+        const got = [].concat(params).find(x => x && x.Key === "ReceiverPartyPublicName");
+        const raw = got ? String(got.Value || "") : "";
+        // Safaricom formats this as "2547XXXXXXXX - FIRST LAST"
+        const payeeName = raw.includes("-") ? raw.split("-").slice(1).join("-").trim() : raw.trim();
+        if (payeeName) {
+          const u = (await pool.query(
+            "SELECT full_name FROM users WHERE id=$1", [t.user_id])).rows[0];
+          const nm = nameMatches(u && u.full_name, payeeName);
+          await pool.query(
+            `UPDATE users SET mpesa_name=$2, name_verified=$3, name_mismatch=$4 WHERE id=$1`,
+            [t.user_id, payeeName, nm.ok, !nm.ok]);
+          await pool.query("UPDATE tx SET payer_name=$2 WHERE id=$1", [t.id, payeeName]);
+          if (!nm.ok) await pool.query(
+            `UPDATE tx SET note=$2 WHERE id=$1`,
+            [t.id, "Paid out to \"" + payeeName + "\", registered as \"" +
+                   ((u && u.full_name) || "?") + "\" - review this account."]);
+        }
         await pool.query("UPDATE tx SET status='success' WHERE id=$1", [t.id]);
       } else {
         // failed or timed out — put the money back in the pots it came from
@@ -600,7 +743,7 @@ async function withdrawalsToday(userId) {
   const start = new Date(); start.setHours(0, 0, 0, 0);
   const r = await pool.query(
     `SELECT COUNT(*) c FROM tx WHERE user_id=$1 AND kind IN ('withdraw','pesalink')
-     AND status IN ('pending','sending','success','requested') AND created >= $2`,
+     AND status IN ('pending','sending','success','requested','review') AND created >= $2`,
     [userId, start.getTime()]);
   return Number(r.rows[0].c);
 }
@@ -637,6 +780,12 @@ app.post("/api/withdraw", auth, async (req, res) => {
     [req.user.id, Date.now() - 120000]);
   if (inflight.rowCount)
     return res.status(409).json({ error: "A withdrawal is already being processed. Give it a moment." });
+  const held = await pool.query(
+    `SELECT 1 FROM tx WHERE user_id=$1 AND kind='withdraw' AND status='review' LIMIT 1`,
+    [req.user.id]);
+  if (held.rowCount)
+    return res.status(409).json({
+      error: "You already have a withdrawal being checked. It will be sent once approved." });
 
   const ref = "wd_" + crypto.randomBytes(10).toString("hex");
   let fromWin = 0, fromBal = 0;
@@ -668,6 +817,22 @@ app.post("/api/withdraw", auth, async (req, res) => {
     return res.status(500).json({ error: "Could not start the withdrawal. Your balance was not charged." });
   }
   lockClient.release();
+
+  /* Above the review limit the money has already left the player's wallet but
+     is not sent until the operator approves it in the console. A flagged name
+     is held at any amount: that is exactly the case a person should look at. */
+  const reviewLimit = Number(st.kyc_review_limit) || 20000;
+  if (amountKes > reviewLimit || req.user.name_mismatch) {
+    await pool.query("UPDATE tx SET status='review', note=$2 WHERE ref=$1",
+      [ref, req.user.name_mismatch
+        ? "Name on M-Pesa does not match the registered name."
+        : "Above the KSh " + reviewLimit.toLocaleString() + " automatic limit."]);
+    const u0 = await pool.query("SELECT balance, winnings FROM users WHERE id=$1", [req.user.id]);
+    return res.json({ ok: true, review: true,
+      balance: Number(u0.rows[0].balance), winnings: Number(u0.rows[0].winnings),
+      message: "Withdrawal received and being checked. Large payouts are reviewed by our "
+             + "team before they are sent, usually within a few hours." });
+  }
 
   const out = await sendTransfer({ name: req.user.full_name, phone: phone, cents: cents, ref: ref });
   if (!out.ok) {
@@ -736,7 +901,12 @@ function payFor(key, odds, bets) {
 }
 
 async function settle(user, bets, stake, live, st, freeSpin) {
-  const outcomes = buildOutcomes(st.target_rtp);
+  /* Demo plays the same game at a far friendlier rate: the point of the demo
+     is to show how the wheel works, and a player who loses 8 spins running
+     never gets that far. Live play is untouched. */
+  const outcomes = live
+    ? buildOutcomes(st.target_rtp)
+    : buildOutcomes(st.demo_rtp || 150, MAX_DEMO_RTP);
   const hit = drawOutcome(outcomes);
   let gross = 0, jackpotWin = 0, respin = false, extras = null;
 
